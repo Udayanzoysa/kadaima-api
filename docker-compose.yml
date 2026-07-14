@@ -22,7 +22,7 @@ services:
     environment:
       DATABASE_URL: postgresql://myuser:udaya96@db:5432/kadaimadb
     ports:
-      - "80:5425"
+      - "80:4000"
     restart: always
 
 volumes:
