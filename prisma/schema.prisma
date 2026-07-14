@@ -1,0 +1,360 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+enum Role {
+  SUPER_ADMIN
+  CUSTOMER_ADMIN
+  USER
+}
+
+enum Action {
+  MANAGE
+  CREATE
+  READ
+  EDIT
+  DELETE
+  EXPORT
+  IMPORT
+  ASSIGN
+  CHANGE_STATUS
+}
+
+enum Subject {
+  SETTINGS
+  USERS
+  ROLES
+  DASHBOARD_ACCESS
+  LOG
+  REPORTS
+  QUIZZES
+}
+
+enum QuizStatus {
+  Draft
+  Published
+  Archived
+}
+
+enum QuestionStatus {
+  Draft
+  Published
+  Archived
+}
+
+enum QuestionType {
+  MCQ
+  SHORT_TEXT
+  NUMERIC
+  SEQUENCE
+  ESSAY
+}
+
+enum AttemptStatus {
+  In_Progress
+  Submitted
+  Timed_Out
+}
+
+model Permission {
+  id              String         @id @default(uuid())
+  action          Action         // e.g., CREATE
+  subject         Subject        // e.g., USERS
+  conditions      Json?          // ABAC rule styling: e.g., {"userId": "{{userId}}"}
+  
+  // Can be mapped directly to a User or a Role template
+  userId          String?
+  user            User?          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  permissionSetId String?
+  permissionSet   PermissionSet? @relation(fields: [permissionSetId], references: [id], onDelete: Cascade)
+}
+
+model User {
+  id                 String    @id @default(uuid())
+  email              String    @unique
+  passwordHash       String
+  role               Role      @default(USER)
+  isTwoFactorEnabled Boolean   @default(false)
+  twoFactorSecret    String?
+  
+  // Workspace association
+  workspaceId        String
+  workspace          Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  
+  permissions        Permission[] // Dynamic capability list
+  
+  customRoleId       String?
+  customRole         CustomRole? @relation(fields: [customRoleId], references: [id], onDelete: SetNull)
+  
+  reviewsPerformed   AccessReview[] @relation("ReviewerUser")
+  
+  name               String?
+  firstName          String?
+  lastName           String?
+  company            String?
+  phoneNumber        String?
+  address            String?
+  team               String?
+  status             String    @default("Active")
+  
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  // Hierarchical Delegation Permissions
+  invitedById          String?
+  invitedBy            User?          @relation("UserHierarchy", fields: [invitedById], references: [id], onDelete: SetNull)
+  invitedUsers         User[]         @relation("UserHierarchy")
+  canViewOthers        Boolean        @default(false)
+  canManagePermissions Boolean        @default(false)
+
+  quizzesCreated       Quiz[]         @relation("QuizCreator")
+  questionsCreated     Question[]     @relation("QuestionCreator")
+  quizAttempts         QuizAttempt[]  @relation("StudentAttempts")
+
+  @@index([workspaceId])
+}
+
+model Workspace {
+  id                 String          @id @default(uuid())
+  name               String
+  
+  // Hierarchical Multi-Tenancy
+  parentId           String?
+  parent             Workspace?      @relation("WorkspaceHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
+  subWorkspaces      Workspace[]     @relation("WorkspaceHierarchy")
+
+  isActive           Boolean         @default(true)  // Kill switch
+
+  users              User[]
+  
+  customRoles        CustomRole[]
+  permissionSets     PermissionSet[]
+  accessReviews      AccessReview[]
+  
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+}
+
+model CustomRole {
+  id             String         @id @default(uuid())
+  name           String         // e.g., "Owner", "Admin", "Manager", "Support", "Analyst"
+  accessLevel    String         // "Full" or "Scoped"
+  description    String?
+  
+  workspaceId    String
+  workspace      Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  
+  permissionSets PermissionSet[] // Many-to-many relationship
+  
+  users          User[]         // Users assigned to this role
+  
+  lastReview     DateTime?      // Last review date
+  owner          String         @default("System") // "System" or username/userId
+  status         String         @default("Active") // "Active" or "Needs review"
+  isSystem       Boolean        @default(false)    // True if standard system roles (Support, Analyst, etc.)
+  
+  accessReviews  AccessReview[]
+
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  @@unique([workspaceId, name]) // A workspace cannot have duplicate roles
+}
+
+model PermissionSet {
+  id             String         @id @default(uuid())
+  name           String         // e.g. "Users", "Settings", "Reports"
+  description    String?
+
+  workspaceId    String
+  workspace      Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  roles          CustomRole[]   // Many-to-many relation with CustomRole
+
+  permissions    Permission[]   // Permissions inside this set
+
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  @@unique([workspaceId, name])
+}
+
+model AccessReview {
+  id           String      @id @default(uuid())
+  workspaceId  String
+  workspace    Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  roleId       String
+  role         CustomRole  @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  reviewerId   String
+  reviewer     User        @relation("ReviewerUser", fields: [reviewerId], references: [id])
+
+  status       String      // e.g., "Approved", "Revoked", "Modified"
+  notes        String?
+
+  reviewedAt   DateTime    @default(now())
+}
+
+model Course {
+  id        String   @id @default(uuid())
+  title     String   @db.VarChar(255)
+  createdAt DateTime @default(now()) @map("created_at")
+  quizzes   Quiz[]
+
+  @@map("courses")
+}
+
+model Quiz {
+  id                     String         @id @default(uuid())
+  courseId               String         @map("course_id")
+  course                 Course         @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  title                  Json
+  /// Rich HTML description / intro body (LocalizedText).
+  description            Json?
+  /// Public hero / preview image URL (under /uploads/quizzes/...).
+  coverImageUrl          String?        @map("cover_image_url")
+  durationMinutes        Int            @map("duration_minutes")
+  passingScorePercentage Int            @default(70) @map("passing_score_percentage")
+  shuffleQuestions       Boolean        @default(false) @map("shuffle_questions")
+  status                 QuizStatus     @default(Draft)
+  createdById            String         @map("created_by")
+  createdBy              User           @relation("QuizCreator", fields: [createdById], references: [id])
+  createdAt              DateTime       @default(now()) @map("created_at")
+  updatedAt              DateTime       @updatedAt @map("updated_at")
+  quizQuestions          QuizQuestion[]
+  attempts               QuizAttempt[]
+
+  @@index([courseId])
+  @@index([createdById])
+  @@map("quizzes")
+}
+
+model Question {
+  id           String         @id @default(uuid())
+  questionText Json           @map("question_text")
+  type         QuestionType   @default(MCQ)
+  points       Int            @default(1)
+  status       QuestionStatus @default(Draft)
+  /// Optional diagram / spatial prompt image (URL under /uploads/...).
+  imageUrl     String?        @map("image_url")
+  /// Type-specific settings (match mode, numeric tolerance, sequence order, essay rules, contentFormat).
+  config       Json?
+  createdById  String?        @map("created_by")
+  createdBy    User?          @relation("QuestionCreator", fields: [createdById], references: [id])
+  createdAt    DateTime       @default(now()) @map("created_at")
+  updatedAt    DateTime       @updatedAt @map("updated_at")
+  choices      AnswerChoice[]
+  quizLinks    QuizQuestion[]
+  responses    StudentResponse[]
+
+  @@index([createdById])
+  @@index([status])
+  @@map("questions")
+}
+
+/// Many-to-many: one bank question can belong to many quizzes.
+model QuizQuestion {
+  id         String   @id @default(uuid())
+  quizId     String   @map("quiz_id")
+  quiz       Quiz     @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  questionId String   @map("question_id")
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  sortOrder  Int      @map("sort_order")
+
+  @@unique([quizId, questionId])
+  @@index([quizId])
+  @@index([questionId])
+  @@map("quiz_questions")
+}
+
+model AnswerChoice {
+  id         String   @id @default(uuid())
+  questionId String   @map("question_id")
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  choiceText Json     @map("choice_text")
+  isCorrect  Boolean  @default(false) @map("is_correct")
+  responses  StudentResponse[]
+
+  @@index([questionId])
+  @@map("answer_choices")
+}
+
+model GuestLead {
+  id                String        @id @default(uuid())
+  guestSessionId    String        @unique @map("guest_session_id")
+  studentName       String        @map("student_name") @db.VarChar(255)
+  school            String        @db.VarChar(255)
+  mobileNumber      String        @map("mobile_number") @db.VarChar(20)
+  email             String?       @db.VarChar(255)
+  quizAttemptsCount Int           @default(0) @map("quiz_attempts_count")
+  createdAt         DateTime      @default(now()) @map("created_at")
+  updatedAt         DateTime      @updatedAt @map("updated_at")
+  attempts          QuizAttempt[]
+
+  @@index([mobileNumber])
+  @@map("guest_leads")
+}
+
+model QuizAttempt {
+  id             String        @id @default(uuid())
+  quizId         String        @map("quiz_id")
+  quiz           Quiz          @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  /// Set for registered students; null for guest attempts.
+  studentId      String?       @map("student_id")
+  student        User?         @relation("StudentAttempts", fields: [studentId], references: [id])
+  /// Set for frictionless guest attempts; null for registered students.
+  guestLeadId    String?       @map("guest_lead_id")
+  guestLead      GuestLead?    @relation(fields: [guestLeadId], references: [id], onDelete: Cascade)
+  /// Unguessable public results URL token (guest + registered).
+  resultToken    String?       @unique @map("result_token")
+  startedAt         DateTime      @default(now()) @map("started_at")
+  /// Soft wall-clock hint kept for reporting; live timing uses secondsRemaining.
+  expiresAt         DateTime      @map("expires_at")
+  submittedAt       DateTime?     @map("submitted_at")
+  lastActivityAt    DateTime      @default(now()) @map("last_activity_at")
+  /// Authoritative remaining quiz time (pauses on disconnect / tab hide).
+  secondsRemaining  Int           @map("seconds_remaining")
+  /// Tab-switch / focus-loss cheating counter (auto-submit at 3).
+  violationCount    Int           @default(0) @map("violation_count")
+  /// Last successful heartbeat; used to deduct time only for short active gaps.
+  lastHeartbeatAt   DateTime      @default(now()) @map("last_heartbeat_at")
+  /// Stable question order for this attempt when shuffle is enabled.
+  questionOrder     Json?         @map("question_order")
+  status            AttemptStatus @default(In_Progress)
+  finalScore        Int           @default(0) @map("final_score")
+  isPassed          Boolean       @default(false) @map("is_passed")
+  responses         StudentResponse[]
+
+  @@index([quizId])
+  @@index([studentId])
+  @@index([guestLeadId])
+  @@map("quiz_attempts")
+}
+
+model StudentResponse {
+  id                 String        @id @default(uuid())
+  attemptId          String        @map("attempt_id")
+  attempt            QuizAttempt   @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  questionId         String        @map("question_id")
+  question           Question      @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  selectedChoiceId   String?       @map("selected_choice_id")
+  selectedChoice     AnswerChoice? @relation(fields: [selectedChoiceId], references: [id])
+  textResponse       String?       @map("text_response")
+  timeSpentSeconds   Int           @default(0) @map("time_spent_seconds")
+  isCorrect          Boolean       @default(false) @map("is_correct")
+  /// Essay / free-text awaiting instructor scoring.
+  needsManualReview  Boolean       @default(false) @map("needs_manual_review")
+
+  @@unique([attemptId, questionId])
+  @@index([attemptId])
+  @@index([questionId])
+  @@map("student_responses")
+}

@@ -1,0 +1,3 @@
+ALTER TABLE "quizzes"
+ADD COLUMN IF NOT EXISTS "topic" JSONB,
+ADD COLUMN IF NOT EXISTS "instructions" JSONB;
