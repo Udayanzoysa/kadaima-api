@@ -25,4 +25,4 @@ RUN npm run build
 EXPOSE 4000
 
 # Start the application using npm script to ensure paths map perfectly
-CMD ["node", "dist/src/main.js"]
+CMD ["node", "dist/main.js"]
