@@ -5,6 +5,7 @@ import {
   IsObject,
   IsOptional,
   IsString,
+  IsUUID,
   Min,
   ValidateNested,
 } from 'class-validator';
@@ -98,6 +99,19 @@ export class UpdateBankQuestionDto {
 }
 
 export class UpdateQuestionStatusDto {
+  @ApiProperty({ enum: QuestionStatus })
+  @IsEnum(QuestionStatus)
+  status: QuestionStatus;
+}
+
+export class BulkQuestionIdsDto {
+  @ApiProperty({ type: [String] })
+  @IsArray()
+  @IsUUID('4', { each: true })
+  ids: string[];
+}
+
+export class BulkUpdateQuestionStatusDto extends BulkQuestionIdsDto {
   @ApiProperty({ enum: QuestionStatus })
   @IsEnum(QuestionStatus)
   status: QuestionStatus;

@@ -40,6 +40,80 @@ export class QuestionService {
     });
   }
 
+  async listPaginated(opts: {
+    status?: QuestionStatus;
+    page?: number;
+    pageSize?: number;
+  }) {
+    const page = Math.max(1, opts.page ?? 1);
+    const pageSize = Math.min(100, Math.max(1, opts.pageSize ?? 10));
+    const where = opts.status ? { status: opts.status } : undefined;
+
+    const [total, items] = await Promise.all([
+      this.prisma.question.count({ where }),
+      this.prisma.question.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+        include: {
+          choices: true,
+          createdBy: { select: { id: true, email: true, name: true } },
+          _count: { select: { quizLinks: true, responses: true } },
+          quizLinks: {
+            include: {
+              quiz: { select: { id: true, title: true, status: true } },
+            },
+          },
+        },
+      }),
+    ]);
+
+    return {
+      items,
+      total,
+      page,
+      pageSize,
+      totalPages: Math.max(1, Math.ceil(total / pageSize)),
+    };
+  }
+
+  async bulkUpdateStatus(ids: string[], status: QuestionStatus) {
+    if (!ids.length) throw new BadRequestException('No question IDs provided');
+    const result = await this.prisma.question.updateMany({
+      where: { id: { in: ids } },
+      data: { status },
+    });
+    return { updated: result.count, status };
+  }
+
+  async bulkDelete(ids: string[]) {
+    if (!ids.length) throw new BadRequestException('No question IDs provided');
+
+    const questions = await this.prisma.question.findMany({
+      where: { id: { in: ids } },
+      include: { _count: { select: { quizLinks: true, responses: true } } },
+    });
+
+    let deleted = 0;
+    let archived = 0;
+
+    for (const question of questions) {
+      if (question._count.responses > 0 || question._count.quizLinks > 0) {
+        await this.prisma.question.update({
+          where: { id: question.id },
+          data: { status: QuestionStatus.Archived },
+        });
+        archived += 1;
+      } else {
+        await this.prisma.question.delete({ where: { id: question.id } });
+        deleted += 1;
+      }
+    }
+
+    return { deleted, archived, total: questions.length };
+  }
+
   async getById(id: string) {
     const question = await this.prisma.question.findUnique({
       where: { id },

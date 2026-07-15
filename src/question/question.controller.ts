@@ -32,6 +32,8 @@ import {
   CreateBankQuestionDto,
   UpdateBankQuestionDto,
   UpdateQuestionStatusDto,
+  BulkQuestionIdsDto,
+  BulkUpdateQuestionStatusDto,
 } from './dto/bank-question.dto';
 
 const uploadDir = join(process.cwd(), 'uploads', 'questions');
@@ -47,10 +49,36 @@ export class QuestionController {
   constructor(private questionService: QuestionService) {}
 
   @Get()
-  @ApiOperation({ summary: 'List question bank' })
+  @ApiOperation({ summary: 'List question bank (paginated)' })
   @ApiQuery({ name: 'status', required: false, enum: QuestionStatus })
-  list(@Query('status') status?: QuestionStatus) {
-    return this.questionService.list(status);
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'pageSize', required: false, type: Number })
+  list(
+    @Query('status') status?: QuestionStatus,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+  ) {
+    // Backward compatible: without page → full list (quiz builder attach)
+    if (page === undefined && pageSize === undefined) {
+      return this.questionService.list(status);
+    }
+    return this.questionService.listPaginated({
+      status,
+      page: page ? Number(page) : 1,
+      pageSize: pageSize ? Number(pageSize) : 10,
+    });
+  }
+
+  @Patch('bulk/status')
+  @ApiOperation({ summary: 'Bulk update question status' })
+  bulkUpdateStatus(@Body() dto: BulkUpdateQuestionStatusDto) {
+    return this.questionService.bulkUpdateStatus(dto.ids, dto.status);
+  }
+
+  @Post('bulk/delete')
+  @ApiOperation({ summary: 'Bulk delete questions (archives if in use)' })
+  bulkDelete(@Body() dto: BulkQuestionIdsDto) {
+    return this.questionService.bulkDelete(dto.ids);
   }
 
   @Post('upload-image')

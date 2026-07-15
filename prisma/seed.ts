@@ -314,9 +314,36 @@ async function main() {
     },
   });
 
-  const mathCourse = await prisma.course.create({ data: { title: 'Mathematics 101' } });
-  await prisma.course.create({ data: { title: 'Science 201' } });
-  const generalStudiesCourse = await prisma.course.create({ data: { title: 'General Studies' } });
+  const mathCourse = await prisma.course.create({
+    data: {
+      title: {
+        en: 'Mathematics 101',
+        si: 'ගණිතය 101',
+        ta: 'கணிதம் 101',
+      },
+      status: 'Published',
+    },
+  });
+  await prisma.course.create({
+    data: {
+      title: {
+        en: 'Science 201',
+        si: 'විද්‍යාව 201',
+        ta: 'அறிவியல் 201',
+      },
+      status: 'Published',
+    },
+  });
+  const generalStudiesCourse = await prisma.course.create({
+    data: {
+      title: {
+        en: 'General Studies',
+        si: 'සාමාන්‍ය අධ්‍යයන',
+        ta: 'பொதுக் கல்வி',
+      },
+      status: 'Published',
+    },
+  });
 
   // Draft example quiz shown in the teacher builder demo (not yet published).
   const draftQuestion = await prisma.question.create({

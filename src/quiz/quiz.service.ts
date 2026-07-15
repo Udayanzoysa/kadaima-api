@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -51,12 +52,18 @@ export class QuizService {
   async getCourses() {
     return this.prisma.course.findMany({
       orderBy: { createdAt: 'desc' },
-      include: { _count: { select: { quizzes: true } } },
+      include: { _count: { select: { quizzes: true, modules: true } } },
     });
   }
 
-  async createCourse(title: string) {
-    return this.prisma.course.create({ data: { title } });
+  async createCourse(title: string | { en: string; si: string; ta: string }) {
+    const localized =
+      typeof title === 'string'
+        ? { en: title, si: title, ta: title }
+        : title;
+    return this.prisma.course.create({
+      data: { title: toJson(localized) },
+    });
   }
 
   async listQuizzes(status?: QuizStatus) {
@@ -65,12 +72,14 @@ export class QuizService {
       orderBy: { createdAt: 'desc' },
       include: {
         course: true,
+        module: { select: { id: true, title: true } },
         createdBy: { select: { id: true, email: true, name: true } },
         _count: { select: { quizQuestions: true, attempts: true } },
       },
     });
     return quizzes.map((q) => ({
       ...q,
+      priceLkr: q.priceLkr != null ? Number(q.priceLkr) : null,
       _count: {
         questions: q._count.quizQuestions,
         attempts: q._count.attempts,
@@ -115,6 +124,7 @@ export class QuizService {
       where: { id },
       include: {
         course: true,
+        module: { select: { id: true, title: true, courseId: true } },
         quizQuestions: {
           orderBy: { sortOrder: 'asc' },
           include: { question: { include: { choices: true } } },
@@ -123,11 +133,15 @@ export class QuizService {
       },
     });
     if (!quiz) throw new NotFoundException('Quiz not found');
-    return this.mapQuizWithQuestions(quiz);
+    const mapped = this.mapQuizWithQuestions(quiz);
+    return {
+      ...mapped,
+      priceLkr: quiz.priceLkr != null ? Number(quiz.priceLkr) : null,
+    };
   }
 
   /** Public catalog — published quizzes only, no question content. */
-  async listPublishedQuizzes() {
+  async listPublishedQuizzes(guestSessionId?: string, userId?: string) {
     const quizzes = await this.prisma.quiz.findMany({
       where: { status: QuizStatus.Published },
       orderBy: { createdAt: 'desc' },
@@ -138,26 +152,117 @@ export class QuizService {
         coverImageUrl: true,
         durationMinutes: true,
         passingScorePercentage: true,
+        maxAttempts: true,
         shuffleQuestions: true,
+        requiresUnlock: true,
+        priceLkr: true,
         course: { select: { id: true, title: true } },
-        _count: { select: { quizQuestions: true } },
+        module: { select: { id: true, title: true } },
+        _count: { select: { quizQuestions: true, attempts: true } },
       },
     });
+
+    const unlockedIds = new Set<string>();
+    const quizIds = quizzes.map((q) => q.id);
+    if (userId && quizIds.length) {
+      const unlocks = await this.prisma.quizUnlock.findMany({
+        where: { userId, quizId: { in: quizIds } },
+        select: { quizId: true },
+      });
+      unlocks.forEach((u) => unlockedIds.add(u.quizId));
+    }
+    if (guestSessionId && quizIds.length) {
+      const unlocks = await this.prisma.quizUnlock.findMany({
+        where: { guestSessionId, quizId: { in: quizIds } },
+        select: { quizId: true },
+      });
+      unlocks.forEach((u) => unlockedIds.add(u.quizId));
+    }
+
     return quizzes.map((q) => ({
       ...q,
-      _count: { questions: q._count.quizQuestions },
+      priceLkr: q.priceLkr != null ? Number(q.priceLkr) : null,
+      unlocked: q.requiresUnlock ? unlockedIds.has(q.id) : true,
+      _count: {
+        questions: q._count.quizQuestions,
+        attempts: q._count.attempts,
+      },
     }));
+  }
+
+  async getQuizAccess(quizId: string, guestSessionId?: string, userId?: string) {
+    const quiz = await this.prisma.quiz.findFirst({
+      where: { id: quizId, status: QuizStatus.Published },
+      select: {
+        id: true,
+        requiresUnlock: true,
+        priceLkr: true,
+        title: true,
+      },
+    });
+    if (!quiz) throw new NotFoundException('Quiz not found or not published');
+
+    const unlocked = await this.isQuizUnlocked(quizId, {
+      guestSessionId,
+      userId,
+    });
+
+    return {
+      quizId: quiz.id,
+      requiresUnlock: quiz.requiresUnlock,
+      priceLkr: quiz.priceLkr != null ? Number(quiz.priceLkr) : null,
+      unlocked: quiz.requiresUnlock ? unlocked : true,
+    };
+  }
+
+  async isQuizUnlocked(
+    quizId: string,
+    opts: { guestSessionId?: string; userId?: string },
+  ): Promise<boolean> {
+    if (opts.guestSessionId) {
+      const row = await this.prisma.quizUnlock.findFirst({
+        where: { quizId, guestSessionId: opts.guestSessionId },
+        select: { id: true },
+      });
+      if (row) return true;
+    }
+    if (opts.userId) {
+      const row = await this.prisma.quizUnlock.findFirst({
+        where: { quizId, userId: opts.userId },
+        select: { id: true },
+      });
+      if (row) return true;
+    }
+    return false;
+  }
+
+  private async assertQuizUnlocked(
+    quiz: { id: string; requiresUnlock: boolean },
+    opts: { guestSessionId?: string; userId?: string },
+  ) {
+    if (!quiz.requiresUnlock) return;
+    const unlocked = await this.isQuizUnlocked(quiz.id, opts);
+    if (!unlocked) {
+      throw new ForbiddenException(
+        'This quiz requires payment verification before you can attempt it.',
+      );
+    }
   }
 
   /**
    * Public quiz preview for guest take — questions + choices, but never
    * exposes `isCorrect` (anti-cheat).
    */
-  async getPublishedQuizForGuest(id: string) {
+  async getPublishedQuizForGuest(
+    id: string,
+    guestSessionId?: string,
+    userId?: string,
+  ) {
     const quiz = await this.prisma.quiz.findFirst({
       where: { id, status: QuizStatus.Published },
       include: {
         course: { select: { id: true, title: true } },
+        module: { select: { id: true, title: true } },
         quizQuestions: {
           orderBy: { sortOrder: 'asc' },
           where: { question: { status: QuestionStatus.Published } },
@@ -167,10 +272,24 @@ export class QuizService {
             },
           },
         },
+        _count: { select: { attempts: true } },
       },
     });
     if (!quiz) throw new NotFoundException('Quiz not found or not published');
-    return this.mapQuizWithQuestions(quiz, { revealAnswers: false });
+    const mapped = this.mapQuizWithQuestions(quiz, { revealAnswers: false });
+    const unlocked = quiz.requiresUnlock
+      ? await this.isQuizUnlocked(id, { guestSessionId, userId })
+      : true;
+    return {
+      ...mapped,
+      requiresUnlock: quiz.requiresUnlock,
+      priceLkr: quiz.priceLkr != null ? Number(quiz.priceLkr) : null,
+      unlocked,
+      _count: {
+        questions: mapped._count.questions,
+        attempts: quiz._count.attempts,
+      },
+    };
   }
 
   private async resolveQuestionOrder(
@@ -209,6 +328,10 @@ export class QuizService {
       throw new BadRequestException('This quiz is not currently available to take.');
     }
 
+    await this.assertQuizUnlocked(quiz, {
+      guestSessionId: lead.guestSessionId,
+    });
+
     const guestLead = await this.prisma.guestLead.upsert({
       where: { guestSessionId: lead.guestSessionId },
       create: {
@@ -226,26 +349,30 @@ export class QuizService {
       },
     });
 
-    const existing = await this.prisma.quizAttempt.findFirst({
+    const attempts = await this.prisma.quizAttempt.findMany({
       where: { quizId, guestLeadId: guestLead.id },
       orderBy: { startedAt: 'desc' },
+      select: { id: true, status: true, secondsRemaining: true },
     });
 
-    if (existing) {
-      if (existing.status === AttemptStatus.In_Progress) {
-        if (existing.secondsRemaining > 0) {
-          await this.prisma.quizAttempt.update({
-            where: { id: existing.id },
-            data: {
-              lastActivityAt: new Date(),
-              lastHeartbeatAt: new Date(),
-            },
-          });
-          return this.getAttemptForStudent(existing.id);
-        }
-        throw new BadRequestException('Your previous attempt has run out of time.');
-      }
-      throw new BadRequestException('You have already attempted this quiz.');
+    const decision = await this.resolveRetakeEligibility(
+      attempts,
+      quiz.maxAttempts ?? 1,
+    );
+
+    if (decision.action === 'resume') {
+      await this.prisma.quizAttempt.update({
+        where: { id: decision.attemptId },
+        data: {
+          lastActivityAt: new Date(),
+          lastHeartbeatAt: new Date(),
+        },
+      });
+      return this.getAttemptForStudent(decision.attemptId);
+    }
+
+    if (decision.action === 'reject') {
+      throw new BadRequestException(decision.message);
     }
 
     const now = new Date();
@@ -282,15 +409,34 @@ export class QuizService {
   }
 
   async listGuestInProgress(guestSessionId: string) {
-    const guestLead = await this.prisma.guestLead.findUnique({
-      where: { guestSessionId },
-    });
-    if (!guestLead) return [];
+    return this.listInProgressAttempts({ guestSessionId });
+  }
+
+  async listStudentInProgress(studentId: string) {
+    return this.listInProgressAttempts({ studentId });
+  }
+
+  async listInProgressAttempts(opts: {
+    guestSessionId?: string;
+    studentId?: string;
+  }) {
+    const or: Array<{ studentId: string } | { guestLeadId: string }> = [];
+    if (opts.studentId) {
+      or.push({ studentId: opts.studentId });
+    }
+    if (opts.guestSessionId) {
+      const guestLead = await this.prisma.guestLead.findUnique({
+        where: { guestSessionId: opts.guestSessionId },
+        select: { id: true },
+      });
+      if (guestLead) or.push({ guestLeadId: guestLead.id });
+    }
+    if (!or.length) return [];
 
     const attempts = await this.prisma.quizAttempt.findMany({
       where: {
-        guestLeadId: guestLead.id,
         status: AttemptStatus.In_Progress,
+        OR: or,
       },
       orderBy: { lastActivityAt: 'desc' },
       include: {
@@ -316,38 +462,64 @@ export class QuizService {
       },
     });
 
-    return attempts.map((attempt) => ({
-      id: attempt.id,
-      quizId: attempt.quizId,
-      status: attempt.status,
-      startedAt: attempt.startedAt,
-      expiresAt: attempt.expiresAt,
-      secondsRemaining: attempt.secondsRemaining,
-      violationCount: attempt.violationCount,
-      lastActivityAt: attempt.lastActivityAt,
-      answeredCount: attempt.responses.length,
-      totalQuestions: attempt.quiz._count.quizQuestions,
-      isExpired: attempt.secondsRemaining <= 0,
-      quiz: {
-        id: attempt.quiz.id,
-        title: attempt.quiz.title,
-        description: attempt.quiz.description,
-        durationMinutes: attempt.quiz.durationMinutes,
-        course: attempt.quiz.course,
-      },
-    }));
+    const seen = new Set<string>();
+    return attempts
+      .filter((attempt) => {
+        if (seen.has(attempt.id)) return false;
+        seen.add(attempt.id);
+        return true;
+      })
+      .map((attempt) => ({
+        id: attempt.id,
+        quizId: attempt.quizId,
+        status: attempt.status,
+        startedAt: attempt.startedAt,
+        expiresAt: attempt.expiresAt,
+        secondsRemaining: attempt.secondsRemaining,
+        violationCount: attempt.violationCount,
+        lastActivityAt: attempt.lastActivityAt,
+        answeredCount: attempt.responses.length,
+        totalQuestions: attempt.quiz._count.quizQuestions,
+        isExpired: attempt.secondsRemaining <= 0,
+        quiz: {
+          id: attempt.quiz.id,
+          title: attempt.quiz.title,
+          description: attempt.quiz.description,
+          durationMinutes: attempt.quiz.durationMinutes,
+          course: attempt.quiz.course,
+        },
+      }));
   }
 
   async listGuestCompleted(guestSessionId: string) {
-    const guestLead = await this.prisma.guestLead.findUnique({
-      where: { guestSessionId },
-    });
-    if (!guestLead) return [];
+    return this.listCompletedAttempts({ guestSessionId });
+  }
+
+  async listStudentCompleted(studentId: string) {
+    return this.listCompletedAttempts({ studentId });
+  }
+
+  async listCompletedAttempts(opts: {
+    guestSessionId?: string;
+    studentId?: string;
+  }) {
+    const or: Array<{ studentId: string } | { guestLeadId: string }> = [];
+    if (opts.studentId) {
+      or.push({ studentId: opts.studentId });
+    }
+    if (opts.guestSessionId) {
+      const guestLead = await this.prisma.guestLead.findUnique({
+        where: { guestSessionId: opts.guestSessionId },
+        select: { id: true },
+      });
+      if (guestLead) or.push({ guestLeadId: guestLead.id });
+    }
+    if (!or.length) return [];
 
     const attempts = await this.prisma.quizAttempt.findMany({
       where: {
-        guestLeadId: guestLead.id,
         status: { in: [AttemptStatus.Submitted, AttemptStatus.Timed_Out] },
+        OR: or,
       },
       orderBy: { submittedAt: 'desc' },
       include: {
@@ -368,29 +540,36 @@ export class QuizService {
       },
     });
 
-    return attempts.map((attempt) => {
-      const correctCount = attempt.responses.filter((r) => r.isCorrect).length;
-      return {
-        id: attempt.id,
-        quizId: attempt.quizId,
-        status: attempt.status,
-        resultToken: attempt.resultToken,
-        startedAt: attempt.startedAt,
-        submittedAt: attempt.submittedAt,
-        finalScore: attempt.finalScore,
-        isPassed: attempt.isPassed,
-        correctCount,
-        totalQuestions: attempt.quiz._count.quizQuestions,
-        quiz: {
-          id: attempt.quiz.id,
-          title: attempt.quiz.title,
-          description: attempt.quiz.description,
-          durationMinutes: attempt.quiz.durationMinutes,
-          passingScorePercentage: attempt.quiz.passingScorePercentage,
-          course: attempt.quiz.course,
-        },
-      };
-    });
+    const seen = new Set<string>();
+    return attempts
+      .filter((attempt) => {
+        if (seen.has(attempt.id)) return false;
+        seen.add(attempt.id);
+        return true;
+      })
+      .map((attempt) => {
+        const correctCount = attempt.responses.filter((r) => r.isCorrect).length;
+        return {
+          id: attempt.id,
+          quizId: attempt.quizId,
+          status: attempt.status,
+          resultToken: attempt.resultToken,
+          startedAt: attempt.startedAt,
+          submittedAt: attempt.submittedAt,
+          finalScore: attempt.finalScore,
+          isPassed: attempt.isPassed,
+          correctCount,
+          totalQuestions: attempt.quiz._count.quizQuestions,
+          quiz: {
+            id: attempt.quiz.id,
+            title: attempt.quiz.title,
+            description: attempt.quiz.description,
+            durationMinutes: attempt.quiz.durationMinutes,
+            passingScorePercentage: attempt.quiz.passingScorePercentage,
+            course: attempt.quiz.course,
+          },
+        };
+      });
   }
 
   async getGuestAttempt(attemptId: string, guestSessionId: string) {
@@ -508,16 +687,34 @@ export class QuizService {
       throw new BadRequestException('Add at least one question or attach bank questions.');
     }
 
+    if (dto.requiresUnlock && (dto.priceLkr == null || dto.priceLkr <= 0)) {
+      throw new BadRequestException('Set a price in LKR when the quiz requires unlock.');
+    }
+
+    if (dto.moduleId) {
+      const mod = await this.prisma.module.findFirst({
+        where: { id: dto.moduleId, courseId: dto.courseId },
+      });
+      if (!mod) {
+        throw new BadRequestException('Module not found for the selected course.');
+      }
+    }
+
     const createdQuizId = await this.prisma.$transaction(async (tx) => {
       const quiz = await tx.quiz.create({
         data: {
           courseId: dto.courseId,
+          moduleId: dto.moduleId ?? undefined,
           title: toJson(dto.title),
           description: dto.description ? toJson(dto.description) : undefined,
           coverImageUrl: dto.coverImageUrl ?? undefined,
           durationMinutes: dto.durationMinutes,
           passingScorePercentage: dto.passingScorePercentage,
+          maxAttempts: dto.maxAttempts ?? 1,
           shuffleQuestions: dto.shuffleQuestions ?? false,
+          requiresUnlock: dto.requiresUnlock ?? false,
+          priceLkr:
+            dto.requiresUnlock && dto.priceLkr != null ? dto.priceLkr : null,
           status: dto.status ?? QuizStatus.Draft,
           createdById: userId,
         },
@@ -579,18 +776,57 @@ export class QuizService {
     const existing = await this.prisma.quiz.findUnique({ where: { id } });
     if (!existing) throw new NotFoundException('Quiz not found');
 
+    const nextRequires =
+      dto.requiresUnlock !== undefined
+        ? dto.requiresUnlock
+        : existing.requiresUnlock;
+    const nextPrice =
+      dto.priceLkr !== undefined
+        ? dto.priceLkr
+        : existing.priceLkr != null
+          ? Number(existing.priceLkr)
+          : null;
+
+    if (nextRequires && (nextPrice == null || nextPrice <= 0)) {
+      throw new BadRequestException('Set a price in LKR when the quiz requires unlock.');
+    }
+
+    const courseId = dto.courseId ?? existing.courseId;
+    if (dto.moduleId) {
+      const mod = await this.prisma.module.findFirst({
+        where: { id: dto.moduleId, courseId },
+      });
+      if (!mod) {
+        throw new BadRequestException('Module not found for the selected course.');
+      }
+    }
+
     await this.prisma.$transaction(async (tx) => {
       await tx.quiz.update({
         where: { id },
         data: {
           courseId: dto.courseId,
+          moduleId:
+            dto.moduleId === undefined
+              ? undefined
+              : dto.moduleId === null
+                ? null
+                : dto.moduleId,
           title: dto.title ? toJson(dto.title) : undefined,
           description: dto.description ? toJson(dto.description) : undefined,
           coverImageUrl:
             dto.coverImageUrl === undefined ? undefined : dto.coverImageUrl,
           durationMinutes: dto.durationMinutes,
           passingScorePercentage: dto.passingScorePercentage,
+          maxAttempts: dto.maxAttempts,
           shuffleQuestions: dto.shuffleQuestions,
+          requiresUnlock: dto.requiresUnlock,
+          priceLkr:
+            dto.requiresUnlock === false
+              ? null
+              : dto.priceLkr !== undefined
+                ? dto.priceLkr
+                : undefined,
           status: dto.status,
         },
       });
@@ -646,6 +882,45 @@ export class QuizService {
     return { deleted: true, id };
   }
 
+  /**
+   * Resume in-progress (with time left), or allow a new attempt when under maxAttempts.
+   * Finalized = Submitted / Timed_Out, plus expired In_Progress (counts against the limit).
+   */
+  private async resolveRetakeEligibility(
+    attempts: Array<{
+      id: string;
+      status: AttemptStatus;
+      secondsRemaining: number;
+    }>,
+    maxAttempts: number,
+  ): Promise<{ action: 'resume'; attemptId: string } | { action: 'create' } | { action: 'reject'; message: string }> {
+    const active = attempts.find(
+      (a) => a.status === AttemptStatus.In_Progress && a.secondsRemaining > 0,
+    );
+    if (active) {
+      return { action: 'resume', attemptId: active.id };
+    }
+
+    const consumed = attempts.filter(
+      (a) =>
+        a.status === AttemptStatus.Submitted ||
+        a.status === AttemptStatus.Timed_Out ||
+        (a.status === AttemptStatus.In_Progress && a.secondsRemaining <= 0),
+    ).length;
+
+    if (consumed >= maxAttempts) {
+      return {
+        action: 'reject',
+        message:
+          maxAttempts <= 1
+            ? 'You have already attempted this quiz.'
+            : `You have used all ${maxAttempts} attempts for this quiz.`,
+      };
+    }
+
+    return { action: 'create' };
+  }
+
   async getMyAttempt(quizId: string, studentId: string) {
     return this.prisma.quizAttempt.findFirst({
       where: { quizId, studentId },
@@ -660,20 +935,29 @@ export class QuizService {
       throw new BadRequestException('This quiz is not currently available to take.');
     }
 
-    const existing = await this.getMyAttempt(quizId, studentId);
+    await this.assertQuizUnlocked(quiz, { userId: studentId });
 
-    if (existing) {
-      if (existing.status === AttemptStatus.In_Progress) {
-        if (existing.secondsRemaining > 0) {
-          await this.prisma.quizAttempt.update({
-            where: { id: existing.id },
-            data: { lastHeartbeatAt: new Date(), lastActivityAt: new Date() },
-          });
-          return this.getAttemptForStudent(existing.id);
-        }
-        throw new BadRequestException('Your previous attempt has run out of time.');
-      }
-      throw new BadRequestException('You have already attempted this quiz.');
+    const attempts = await this.prisma.quizAttempt.findMany({
+      where: { quizId, studentId },
+      orderBy: { startedAt: 'desc' },
+      select: { id: true, status: true, secondsRemaining: true },
+    });
+
+    const decision = await this.resolveRetakeEligibility(
+      attempts,
+      quiz.maxAttempts ?? 1,
+    );
+
+    if (decision.action === 'resume') {
+      await this.prisma.quizAttempt.update({
+        where: { id: decision.attemptId },
+        data: { lastHeartbeatAt: new Date(), lastActivityAt: new Date() },
+      });
+      return this.getAttemptForStudent(decision.attemptId);
+    }
+
+    if (decision.action === 'reject') {
+      throw new BadRequestException(decision.message);
     }
 
     const now = new Date();

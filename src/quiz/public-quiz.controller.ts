@@ -17,22 +17,51 @@ export class PublicQuizController {
 
   @Get()
   @ApiOperation({ summary: 'List published quizzes (no auth)' })
-  listPublished() {
-    return this.quizService.listPublishedQuizzes();
+  @ApiQuery({ name: 'guestSessionId', required: false })
+  @ApiQuery({ name: 'userId', required: false })
+  listPublished(
+    @Query('guestSessionId') guestSessionId?: string,
+    @Query('userId') userId?: string,
+  ) {
+    return this.quizService.listPublishedQuizzes(guestSessionId, userId);
   }
 
   @Get('in-progress')
-  @ApiOperation({ summary: 'List in-progress guest attempts for a guest session' })
-  @ApiQuery({ name: 'guestSessionId', required: true })
-  listInProgress(@Query('guestSessionId') guestSessionId: string) {
-    return this.quizService.listGuestInProgress(guestSessionId);
+  @ApiOperation({
+    summary: 'List in-progress attempts for a guest session and/or logged-in student',
+  })
+  @ApiQuery({ name: 'guestSessionId', required: false })
+  @ApiQuery({ name: 'userId', required: false })
+  listInProgress(
+    @Query('guestSessionId') guestSessionId?: string,
+    @Query('userId') userId?: string,
+  ) {
+    if (!guestSessionId && !userId) {
+      throw new BadRequestException('guestSessionId or userId is required.');
+    }
+    return this.quizService.listInProgressAttempts({
+      guestSessionId,
+      studentId: userId,
+    });
   }
 
   @Get('my-attempts')
-  @ApiOperation({ summary: 'List completed guest attempts for My Attempts review' })
-  @ApiQuery({ name: 'guestSessionId', required: true })
-  listMyAttempts(@Query('guestSessionId') guestSessionId: string) {
-    return this.quizService.listGuestCompleted(guestSessionId);
+  @ApiOperation({
+    summary: 'List completed attempts for a guest session and/or logged-in student',
+  })
+  @ApiQuery({ name: 'guestSessionId', required: false })
+  @ApiQuery({ name: 'userId', required: false })
+  listMyAttempts(
+    @Query('guestSessionId') guestSessionId?: string,
+    @Query('userId') userId?: string,
+  ) {
+    if (!guestSessionId && !userId) {
+      throw new BadRequestException('guestSessionId or userId is required.');
+    }
+    return this.quizService.listCompletedAttempts({
+      guestSessionId,
+      studentId: userId,
+    });
   }
 
   @Get('results/:resultToken')
@@ -90,10 +119,28 @@ export class PublicQuizController {
     return this.gradingService.submitAttempt(attemptId, dto);
   }
 
+  @Get(':id/access')
+  @ApiOperation({ summary: 'Check whether a guest/user has unlocked a quiz' })
+  @ApiQuery({ name: 'guestSessionId', required: false })
+  @ApiQuery({ name: 'userId', required: false })
+  getAccess(
+    @Param('id') id: string,
+    @Query('guestSessionId') guestSessionId?: string,
+    @Query('userId') userId?: string,
+  ) {
+    return this.quizService.getQuizAccess(id, guestSessionId, userId);
+  }
+
   @Get(':id')
   @ApiOperation({ summary: 'Get a published quiz with questions (answers hidden, no auth)' })
-  getPublished(@Param('id') id: string) {
-    return this.quizService.getPublishedQuizForGuest(id);
+  @ApiQuery({ name: 'guestSessionId', required: false })
+  @ApiQuery({ name: 'userId', required: false })
+  getPublished(
+    @Param('id') id: string,
+    @Query('guestSessionId') guestSessionId?: string,
+    @Query('userId') userId?: string,
+  ) {
+    return this.quizService.getPublishedQuizForGuest(id, guestSessionId, userId);
   }
 
   @Post(':id/guest-attempts')

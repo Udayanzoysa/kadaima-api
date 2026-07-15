@@ -375,4 +375,34 @@ export class AuthService {
       accessToken: this.jwtService.sign(payload, { expiresIn: '1d' }),
     };
   }
+
+  async getMe(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        firstName: true,
+        lastName: true,
+        phoneNumber: true,
+        company: true,
+        team: true,
+        role: true,
+        status: true,
+      },
+    });
+    if (!user || user.status === 'Inactive') {
+      throw new UnauthorizedException('Valid authorization session required.');
+    }
+    return {
+      id: user.id,
+      email: user.email,
+      name: user.name || [user.firstName, user.lastName].filter(Boolean).join(' ') || user.email,
+      phoneNumber: user.phoneNumber,
+      school: user.company,
+      team: user.team,
+      role: user.role,
+    };
+  }
 }

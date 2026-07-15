@@ -48,6 +48,12 @@ enum QuestionStatus {
   Archived
 }
 
+enum CourseStatus {
+  Draft
+  Published
+  Archived
+}
+
 enum QuestionType {
   MCQ
   SHORT_TEXT
@@ -60,6 +66,29 @@ enum AttemptStatus {
   In_Progress
   Submitted
   Timed_Out
+}
+
+enum PaymentOrderStatus {
+  Pending
+  Paid
+  Failed
+  Cancelled
+}
+
+enum PaymentProvider {
+  PayHere
+}
+
+enum UnlockMethod {
+  PayHere
+  Voucher
+  Slip
+}
+
+enum SlipSubmissionStatus {
+  Pending
+  Approved
+  Rejected
 }
 
 model Permission {
@@ -114,6 +143,9 @@ model User {
   quizzesCreated     Quiz[]    @relation("QuizCreator")
   questionsCreated   Question[] @relation("QuestionCreator")
   quizAttempts       QuizAttempt[] @relation("StudentAttempts")
+  paymentOrders      PaymentOrder[]
+  quizUnlocks        QuizUnlock[]
+  slipSubmissions    PaymentSlipSubmission[]
 
   @@index([workspaceId])
 }
@@ -200,24 +232,49 @@ model AccessReview {
 }
 
 model Course {
-  id        String    @id @default(uuid()) @db.Uuid
-  title     String    @db.VarChar(255)
-  createdAt DateTime  @default(now()) @map("created_at")
-  quizzes   Quiz[]
+  id          String       @id @default(uuid()) @db.Uuid
+  title       Json
+  description Json?
+  status      CourseStatus @default(Draft)
+  createdAt   DateTime     @default(now()) @map("created_at")
+  updatedAt   DateTime     @updatedAt @map("updated_at")
+  quizzes     Quiz[]
+  modules     Module[]
 
   @@map("courses")
+}
+
+model Module {
+  id          String       @id @default(uuid()) @db.Uuid
+  courseId    String       @map("course_id") @db.Uuid
+  course      Course       @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  title       Json
+  description Json?
+  status      CourseStatus @default(Draft)
+  sortOrder   Int          @default(0) @map("sort_order")
+  createdAt   DateTime     @default(now()) @map("created_at")
+  updatedAt   DateTime     @updatedAt @map("updated_at")
+  quizzes     Quiz[]
+
+  @@index([courseId])
+  @@map("modules")
 }
 
 model Quiz {
   id                     String         @id @default(uuid()) @db.Uuid
   courseId               String         @map("course_id") @db.Uuid
   course                 Course         @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  moduleId               String?        @map("module_id") @db.Uuid
+  module                 Module?        @relation(fields: [moduleId], references: [id], onDelete: SetNull)
   title                  Json
   description            Json?
   coverImageUrl          String?        @map("cover_image_url")
   durationMinutes        Int            @map("duration_minutes")
   passingScorePercentage Int            @default(70) @map("passing_score_percentage")
+  maxAttempts            Int            @default(1) @map("max_attempts")
   shuffleQuestions       Boolean        @default(false) @map("shuffle_questions")
+  requiresUnlock         Boolean        @default(false) @map("requires_unlock")
+  priceLkr               Decimal?       @map("price_lkr") @db.Decimal(12, 2)
   status                 QuizStatus     @default(Draft)
   createdById            String         @map("created_by") @db.Uuid
   createdBy              User           @relation("QuizCreator", fields: [createdById], references: [id])
@@ -225,10 +282,100 @@ model Quiz {
   updatedAt              DateTime       @updatedAt @map("updated_at")
   quizQuestions          QuizQuestion[]
   attempts               QuizAttempt[]
+  paymentOrders          PaymentOrder[]
+  unlocks                QuizUnlock[]
+  unlockVouchers         UnlockVoucher[]
+  slipSubmissions        PaymentSlipSubmission[]
 
   @@index([courseId])
+  @@index([moduleId])
   @@index([createdById])
   @@map("quizzes")
+}
+
+model PaymentOrder {
+  id                String             @id @default(uuid()) @db.Uuid
+  orderId           String             @unique @map("order_id") @db.VarChar(64)
+  quizId            String             @map("quiz_id") @db.Uuid
+  quiz              Quiz               @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  guestSessionId    String?            @map("guest_session_id") @db.VarChar(64)
+  userId            String?            @map("user_id") @db.Uuid
+  user              User?              @relation(fields: [userId], references: [id], onDelete: SetNull)
+  amountLkr         Decimal            @map("amount_lkr") @db.Decimal(12, 2)
+  currency          String             @default("LKR") @db.VarChar(3)
+  status            PaymentOrderStatus @default(Pending)
+  provider          PaymentProvider    @default(PayHere)
+  providerPaymentId String?            @map("provider_payment_id") @db.VarChar(64)
+  createdAt         DateTime           @default(now()) @map("created_at")
+  updatedAt         DateTime           @updatedAt @map("updated_at")
+  unlock            QuizUnlock?
+
+  @@index([quizId])
+  @@index([guestSessionId])
+  @@index([userId])
+  @@map("payment_orders")
+}
+
+model UnlockVoucher {
+  id            String    @id @default(uuid()) @db.Uuid
+  code          String    @unique @db.VarChar(64)
+  quizId        String?   @map("quiz_id") @db.Uuid
+  quiz          Quiz?     @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  maxRedemptions Int      @default(1) @map("max_redemptions")
+  redemptionCount Int     @default(0) @map("redemption_count")
+  expiresAt     DateTime? @map("expires_at")
+  isActive      Boolean   @default(true) @map("is_active")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+  unlocks       QuizUnlock[]
+
+  @@index([quizId])
+  @@map("unlock_vouchers")
+}
+
+model PaymentSlipSubmission {
+  id             String               @id @default(uuid()) @db.Uuid
+  quizId         String               @map("quiz_id") @db.Uuid
+  quiz           Quiz                 @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  guestSessionId String?              @map("guest_session_id") @db.VarChar(64)
+  userId         String?              @map("user_id") @db.Uuid
+  user           User?                @relation(fields: [userId], references: [id], onDelete: SetNull)
+  slipImageUrl   String               @map("slip_image_url")
+  bankReference  String?              @map("bank_reference") @db.VarChar(100)
+  note           String?
+  status         SlipSubmissionStatus @default(Pending)
+  reviewedAt     DateTime?            @map("reviewed_at")
+  createdAt      DateTime             @default(now()) @map("created_at")
+  updatedAt      DateTime             @updatedAt @map("updated_at")
+  unlock         QuizUnlock?
+
+  @@index([quizId])
+  @@index([guestSessionId])
+  @@index([userId])
+  @@map("payment_slip_submissions")
+}
+
+model QuizUnlock {
+  id                String                 @id @default(uuid()) @db.Uuid
+  quizId            String                 @map("quiz_id") @db.Uuid
+  quiz              Quiz                   @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  guestSessionId    String?                @map("guest_session_id") @db.VarChar(64)
+  userId            String?                @map("user_id") @db.Uuid
+  user              User?                  @relation(fields: [userId], references: [id], onDelete: SetNull)
+  method            UnlockMethod
+  paymentOrderId    String?                @unique @map("payment_order_id") @db.Uuid
+  paymentOrder      PaymentOrder?          @relation(fields: [paymentOrderId], references: [id], onDelete: SetNull)
+  voucherCodeId     String?                @map("voucher_code_id") @db.Uuid
+  voucher           UnlockVoucher?         @relation(fields: [voucherCodeId], references: [id], onDelete: SetNull)
+  slipSubmissionId  String?                @unique @map("slip_submission_id") @db.Uuid
+  slipSubmission    PaymentSlipSubmission? @relation(fields: [slipSubmissionId], references: [id], onDelete: SetNull)
+  createdAt         DateTime               @default(now()) @map("created_at")
+
+  @@unique([quizId, guestSessionId])
+  @@unique([quizId, userId])
+  @@index([guestSessionId])
+  @@index([userId])
+  @@map("quiz_unlocks")
 }
 
 model Question {

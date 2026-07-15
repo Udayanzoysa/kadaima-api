@@ -10,6 +10,8 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { QuizModule } from './quiz/quiz.module';
 import { GradingModule } from './grading/grading.module';
 import { AnalyticsModule } from './analytics/analytics.module';
+import { CourseModule } from './course/course.module';
+import { PaymentsModule } from './payments/payments.module';
 
 @Module({
   imports: [
@@ -19,6 +21,8 @@ import { AnalyticsModule } from './analytics/analytics.module';
     UsersModule,
     DashboardModule,
     QuizModule,
+    CourseModule,
+    PaymentsModule,
     GradingModule,
     AnalyticsModule,
     ScheduleModule.forRoot(),

@@ -1,4 +1,4 @@
-import { Controller, Post, Body, UseGuards, Req } from '@nestjs/common';
+import { Controller, Get, Post, Body, UseGuards, Req } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
 import { RegisterAccountDto } from './dto/register-account.dto';
@@ -11,6 +11,7 @@ import {
   ApiBearerAuth,
 } from '@nestjs/swagger';
 import { AuthGuard } from '@nestjs/passport';
+import { JwtAuthGuard } from './guards/jwt-auth.guard';
 
 @ApiTags('Identity & Access Management')
 @Controller('auth')
@@ -61,5 +62,13 @@ export class AuthController {
   })
   async verify2Fa(@Req() req: any, @Body() dto: Verify2FaDto) {
     return this.authService.verifyTwoFactor(req.user.sub, dto.token);
+  }
+
+  @Get('me')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Validate session and return the current user profile' })
+  getMe(@Req() req: any) {
+    return this.authService.getMe(req.user.id);
   }
 }

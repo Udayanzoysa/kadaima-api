@@ -122,6 +122,18 @@ export class QuizController {
     return this.quizService.createQuiz(dto, req.user.id);
   }
 
+  @Get('me/in-progress')
+  @ApiOperation({ summary: 'List in-progress quiz attempts for the logged-in student' })
+  listMyInProgress(@Req() req: any) {
+    return this.quizService.listInProgressAttempts({ studentId: req.user.id });
+  }
+
+  @Get('me/attempts')
+  @ApiOperation({ summary: 'List completed quiz attempts for the logged-in student' })
+  listMyCompletedAttempts(@Req() req: any) {
+    return this.quizService.listCompletedAttempts({ studentId: req.user.id });
+  }
+
   @Get(':id')
   @ApiOperation({ summary: 'Get quiz by ID with questions (teacher/admin view)' })
   getQuiz(@Param('id') id: string) {

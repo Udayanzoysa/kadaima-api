@@ -3,11 +3,13 @@ import {
   IsBoolean,
   IsEnum,
   IsInt,
+  IsNumber,
   IsOptional,
   IsString,
   IsUUID,
   Max,
   Min,
+  ValidateIf,
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
@@ -20,6 +22,11 @@ export class CreateQuizDto {
   @ApiProperty()
   @IsUUID()
   courseId: string;
+
+  @ApiProperty({ required: false, description: 'Optional module within the course' })
+  @IsUUID()
+  @IsOptional()
+  moduleId?: string | null;
 
   @ApiProperty({ type: LocalizedTextDto })
   @ValidateNested()
@@ -48,6 +55,17 @@ export class CreateQuizDto {
   @Max(100)
   passingScorePercentage: number;
 
+  @ApiProperty({
+    default: 1,
+    required: false,
+    description: 'Total allowed attempts per student/guest (including the first)',
+  })
+  @IsInt()
+  @Min(1)
+  @Max(50)
+  @IsOptional()
+  maxAttempts?: number;
+
   @ApiProperty({ enum: QuizStatus, default: QuizStatus.Draft })
   @IsEnum(QuizStatus)
   @IsOptional()
@@ -57,6 +75,19 @@ export class CreateQuizDto {
   @IsBoolean()
   @IsOptional()
   shuffleQuestions?: boolean;
+
+  @ApiProperty({ default: false, required: false })
+  @IsBoolean()
+  @IsOptional()
+  requiresUnlock?: boolean;
+
+  @ApiProperty({ required: false, description: 'Price in LKR when requiresUnlock is true' })
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(1)
+  @ValidateIf((o: CreateQuizDto) => o.requiresUnlock === true)
+  @Type(() => Number)
+  @IsOptional()
+  priceLkr?: number | null;
 
   /** Inline questions created in the bank and attached to this quiz. */
   @ApiProperty({ type: [CreateQuestionDto], required: false })
