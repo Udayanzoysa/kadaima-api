@@ -23,7 +23,11 @@ services:
       DATABASE_URL: postgresql://myuser:udaya96@db:5432/kadaimadb
     ports:
       - "4000:4000"
+    volumes:
+      # Persist quiz/question image uploads across container restarts
+      - uploads:/app/uploads
     restart: always
 
 volumes:
   pgdata:
+  uploads:
