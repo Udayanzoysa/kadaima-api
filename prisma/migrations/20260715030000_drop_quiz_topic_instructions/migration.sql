@@ -1,3 +1,0 @@
-ALTER TABLE "quizzes"
-DROP COLUMN IF EXISTS "topic",
-DROP COLUMN IF EXISTS "instructions";

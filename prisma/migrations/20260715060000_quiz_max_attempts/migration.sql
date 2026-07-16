@@ -1,2 +1,0 @@
--- AlterTable
-ALTER TABLE "quizzes" ADD COLUMN IF NOT EXISTS "max_attempts" INTEGER NOT NULL DEFAULT 1;

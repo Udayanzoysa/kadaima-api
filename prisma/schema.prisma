@@ -211,11 +211,11 @@ model TeacherProfile {
 
 /// Student inquiries submitted from the public /t/{slug} Contact form.
 model TeacherContactInquiry {
-  id             String               @id @default(uuid())
-  profileId      String               @map("profile_id")
+  id             String               @id @default(uuid()) @db.Uuid
+  profileId      String               @map("profile_id") @db.Uuid
   profile        TeacherProfile       @relation(fields: [profileId], references: [id], onDelete: Cascade)
   guestSessionId String?              @map("guest_session_id") @db.VarChar(64)
-  userId         String?              @map("user_id")
+  userId         String?              @map("user_id") @db.Uuid
   studentName    String               @map("student_name") @db.VarChar(255)
   mobileNumber   String               @map("mobile_number") @db.VarChar(32)
   email          String?              @db.VarChar(255)
@@ -282,8 +282,8 @@ model TeacherClass {
 
 /// Static poster / promo banners placed at top, middle, or footer of /t/{slug}
 model TeacherPoster {
-  id        String                 @id @default(uuid())
-  profileId String                 @map("profile_id")
+  id        String                 @id @default(uuid()) @db.Uuid
+  profileId String                 @map("profile_id") @db.Uuid
   profile   TeacherProfile         @relation(fields: [profileId], references: [id], onDelete: Cascade)
   imageUrl  String                 @map("image_url")
   linkUrl   String?                @map("link_url")
