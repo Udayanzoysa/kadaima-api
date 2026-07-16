@@ -24,5 +24,5 @@ RUN npm run build
 
 EXPOSE 4000
 
-# Start the application using npm script to ensure paths map perfectly
-CMD ["node", "dist/main.js"]
+# Apply migrations, then start the API
+CMD ["sh", "-c", "npx prisma migrate deploy && node dist/main.js"]

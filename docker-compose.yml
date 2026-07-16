@@ -15,6 +15,7 @@ services:
       - pgdata:/var/lib/postgresql/data
 
   api:
+    build: .
     image: kadaima-api:latest
     container_name: kadaima-api
     depends_on:
