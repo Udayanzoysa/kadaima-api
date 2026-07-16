@@ -42,6 +42,25 @@ enum QuizStatus {
   Archived
 }
 
+enum TeacherQuizVisibility {
+  ALL
+  SELECTED
+}
+
+enum TeacherPosterPlacement {
+  TOP
+  MIDDLE
+  FOOTER
+  SIDE
+  RIGHT
+}
+
+enum TeacherInquiryStatus {
+  NEW
+  READ
+  ARCHIVED
+}
+
 enum QuestionStatus {
   Draft
   Published
@@ -89,6 +108,11 @@ enum SlipSubmissionStatus {
   Pending
   Approved
   Rejected
+}
+
+enum PasswordResetChannel {
+  EMAIL
+  SMS
 }
 
 model Permission {
@@ -146,8 +170,158 @@ model User {
   paymentOrders      PaymentOrder[]
   quizUnlocks        QuizUnlock[]
   slipSubmissions    PaymentSlipSubmission[]
+  passwordResetTokens PasswordResetToken[]
+  teacherProfile     TeacherProfile?
 
   @@index([workspaceId])
+}
+
+/// Public branded landing for a teacher (shared DB, user-scoped — not a new workspace).
+model TeacherProfile {
+  id             String                 @id @default(uuid()) @db.Uuid
+  userId         String                 @unique @map("user_id") @db.Uuid
+  user           User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  slug           String                 @unique @db.VarChar(64)
+  displayName    String                 @map("display_name") @db.VarChar(255)
+  title          String?                @db.VarChar(255)
+  description    String?                @db.Text
+  /// Editable About section body on /t/{slug}
+  aboutText      String?                @map("about_text") @db.Text
+  /// Editable Contact section body on /t/{slug}
+  contactText    String?                @map("contact_text") @db.Text
+  contactPhone   String?                @map("contact_phone") @db.VarChar(64)
+  contactWhatsappUrl String?            @map("contact_whatsapp_url") @db.VarChar(512)
+  contactAddress String?                @map("contact_address") @db.Text
+  sideBannerUrl  String?                @map("side_banner_url")
+  isPublic       Boolean                @default(false) @map("is_public")
+  quizVisibility TeacherQuizVisibility  @default(ALL) @map("quiz_visibility")
+  /// Page-builder layout: section visibility + order for /t/{slug}
+  pageLayout     Json?                  @map("page_layout")
+  createdAt      DateTime               @default(now()) @map("created_at")
+  updatedAt      DateTime               @updatedAt @map("updated_at")
+  banners         TeacherBanner[]
+  classes         TeacherClass[]
+  posters         TeacherPoster[]
+  selectedQuizzes TeacherProfileQuiz[]
+  inquiries       TeacherContactInquiry[]
+
+  @@index([slug])
+  @@map("teacher_profiles")
+}
+
+/// Student inquiries submitted from the public /t/{slug} Contact form.
+model TeacherContactInquiry {
+  id             String               @id @default(uuid())
+  profileId      String               @map("profile_id")
+  profile        TeacherProfile       @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  guestSessionId String?              @map("guest_session_id") @db.VarChar(64)
+  userId         String?              @map("user_id")
+  studentName    String               @map("student_name") @db.VarChar(255)
+  mobileNumber   String               @map("mobile_number") @db.VarChar(32)
+  email          String?              @db.VarChar(255)
+  message        String               @db.Text
+  status         TeacherInquiryStatus @default(NEW)
+  createdAt      DateTime             @default(now()) @map("created_at")
+  updatedAt      DateTime             @updatedAt @map("updated_at")
+
+  @@index([profileId, createdAt])
+  @@index([profileId, status])
+  @@map("teacher_contact_inquiries")
+}
+
+/// Quizzes explicitly featured on a teacher public page when quizVisibility = SELECTED.
+model TeacherProfileQuiz {
+  id        String         @id @default(uuid()) @db.Uuid
+  profileId String         @map("profile_id") @db.Uuid
+  profile   TeacherProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  quizId    String         @map("quiz_id") @db.Uuid
+  quiz      Quiz           @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  createdAt DateTime       @default(now()) @map("created_at")
+
+  @@unique([profileId, quizId])
+  @@index([profileId])
+  @@index([quizId])
+  @@map("teacher_profile_quizzes")
+}
+
+model TeacherBanner {
+  id        String         @id @default(uuid()) @db.Uuid
+  profileId String         @map("profile_id") @db.Uuid
+  profile   TeacherProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  imageUrl  String         @map("image_url")
+  linkUrl   String?        @map("link_url")
+  title     String?        @db.VarChar(255)
+  subtitle  String?        @db.Text
+  ctaLabel  String?        @map("cta_label") @db.VarChar(80)
+  sortOrder Int            @default(0) @map("sort_order")
+  isActive  Boolean        @default(true) @map("is_active")
+  createdAt DateTime       @default(now()) @map("created_at")
+
+  @@index([profileId])
+  @@map("teacher_banners")
+}
+
+model TeacherClass {
+  id           String         @id @default(uuid()) @db.Uuid
+  profileId    String         @map("profile_id") @db.Uuid
+  profile      TeacherProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  title        String         @db.VarChar(255)
+  description  String?        @db.Text
+  scheduleTime String?        @map("schedule_time") @db.VarChar(120)
+  location     String?        @db.VarChar(255)
+  classDate    String?        @map("class_date") @db.VarChar(120)
+  feeLabel          String?        @map("fee_label") @db.VarChar(80)
+  whatsappGroupUrl  String?        @map("whatsapp_group_url") @db.VarChar(500)
+  sortOrder         Int            @default(0) @map("sort_order")
+  isActive          Boolean        @default(true) @map("is_active")
+  createdAt         DateTime       @default(now()) @map("created_at")
+
+  @@index([profileId])
+  @@map("teacher_classes")
+}
+
+/// Static poster / promo banners placed at top, middle, or footer of /t/{slug}
+model TeacherPoster {
+  id        String                 @id @default(uuid())
+  profileId String                 @map("profile_id")
+  profile   TeacherProfile         @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  imageUrl  String                 @map("image_url")
+  linkUrl   String?                @map("link_url")
+  title     String?                @db.VarChar(255)
+  placement TeacherPosterPlacement @default(MIDDLE)
+  sortOrder Int                    @default(0) @map("sort_order")
+  isActive  Boolean                @default(true) @map("is_active")
+  createdAt DateTime               @default(now()) @map("created_at")
+
+  @@index([profileId])
+  @@map("teacher_posters")
+}
+
+model PasswordResetToken {
+  id          String                @id @default(uuid()) @db.Uuid
+  token       String                @unique
+  userId      String                @map("user_id") @db.Uuid
+  user        User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  channel     PasswordResetChannel
+  destination String                @db.VarChar(255)
+  expiresAt   DateTime              @map("expires_at")
+  isUsed      Boolean               @default(false) @map("is_used")
+  createdAt   DateTime              @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@index([token])
+  @@map("password_reset_tokens")
+}
+
+// Platform-wide notification transport settings (SMTP + SMS). Singleton row id = "default".
+model SystemSetting {
+  id        String   @id @default("default")
+  smtp      Json?
+  sms       Json?
+  updatedAt DateTime @updatedAt @map("updated_at")
+  updatedBy String?  @map("updated_by")
+
+  @@map("system_settings")
 }
 
 model Workspace {
@@ -286,6 +460,7 @@ model Quiz {
   unlocks                QuizUnlock[]
   unlockVouchers         UnlockVoucher[]
   slipSubmissions        PaymentSlipSubmission[]
+  teacherPageSelections  TeacherProfileQuiz[]
 
   @@index([courseId])
   @@index([moduleId])

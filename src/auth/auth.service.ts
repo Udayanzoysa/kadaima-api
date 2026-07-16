@@ -4,14 +4,29 @@ import {
   ConflictException,
   BadRequestException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../prisma/prisma.service';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
+import { createHash, randomInt } from 'crypto';
 import { authenticator } from 'otplib';
 import { RegisterDto } from './dto/register.dto';
 import { RegisterAccountDto } from './dto/register-account.dto';
 import { LoginDto } from './dto/login.dto';
-import { Role, Action, Subject } from '@prisma/client';
+import {
+  ForgotPasswordChannelDto,
+  ForgotPasswordDto,
+} from './dto/forgot-password.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
+import { ValidateResetTokenDto } from './dto/validate-reset-token.dto';
+import { PasswordResetChannel, Role, Action, Subject } from '@prisma/client';
+import { validateAndCleanSriLankanNumber } from '../common/phone-validator';
+import {
+  PASSWORD_RESET_EVENT,
+  PasswordResetEvent,
+} from '../notification/events/password-reset.event';
+import { assertValidSlug, slugFromName } from '../teachers/slug.util';
 
 const DEFAULT_WORKSPACE_NAME = 'Techwing LMS';
 
@@ -20,7 +35,206 @@ export class AuthService {
   constructor(
     private prisma: PrismaService,
     private jwtService: JwtService,
+    private eventEmitter: EventEmitter2,
+    private config: ConfigService,
   ) {}
+
+  private hashResetToken(plain: string) {
+    return createHash('sha256').update(plain).digest('hex');
+  }
+
+  private generateOtp(): string {
+    return String(randomInt(100000, 1000000));
+  }
+
+  /**
+   * Request a password reset via EMAIL or SMS.
+   * Returns a clear error when no matching active account exists.
+   */
+  async forgotPassword(dto: ForgotPasswordDto) {
+    if (dto.channel === ForgotPasswordChannelDto.EMAIL) {
+      await this.requestEmailReset(dto.email!);
+      return {
+        message:
+          'A password reset link has been sent to your email. Click “Reset My Password” in the message.',
+        channel: 'EMAIL' as const,
+        destination: dto.email!.trim().toLowerCase(),
+      };
+    }
+
+    const destination = await this.requestSmsReset(dto.phoneNumber!);
+    return {
+      message: 'A password reset code has been sent to your mobile number.',
+      channel: 'SMS' as const,
+      destination,
+    };
+  }
+
+  private async requestEmailReset(email: string) {
+    const normalized = email.trim().toLowerCase();
+    const user = await this.prisma.user.findFirst({
+      where: {
+        email: { equals: normalized, mode: 'insensitive' },
+      },
+    });
+    if (!user || user.status === 'Inactive') {
+      throw new BadRequestException('No user found for that email.');
+    }
+
+    await this.issueResetToken(
+      user.id,
+      PasswordResetChannel.EMAIL,
+      user.email,
+      user.name || user.firstName || null,
+    );
+  }
+
+  private async requestSmsReset(phoneNumber: string) {
+    const normalized = validateAndCleanSriLankanNumber(phoneNumber);
+    const user = await this.prisma.user.findFirst({
+      where: {
+        OR: [
+          { phoneNumber: normalized },
+          { phoneNumber: `+${normalized}` },
+          { phoneNumber: `0${normalized.slice(2)}` },
+        ],
+        status: 'Active',
+      },
+    });
+    if (!user?.phoneNumber) {
+      throw new BadRequestException('No user found for that mobile number.');
+    }
+
+    await this.issueResetToken(
+      user.id,
+      PasswordResetChannel.SMS,
+      normalized,
+      user.name || user.firstName || null,
+    );
+    return normalized;
+  }
+
+  private async issueResetToken(
+    userId: string,
+    channel: PasswordResetChannel,
+    destination: string,
+    userName?: string | null,
+  ) {
+    const plainToken = this.generateOtp();
+    const tokenHash = this.hashResetToken(plainToken);
+    const ttlSeconds = this.config.get<number>('RESET_TOKEN_TTL') ?? 600;
+    const expiresAt = new Date(Date.now() + ttlSeconds * 1000);
+
+    // Invalidate prior unused tokens for this user+channel
+    await this.prisma.passwordResetToken.updateMany({
+      where: { userId, channel, isUsed: false },
+      data: { isUsed: true },
+    });
+
+    await this.prisma.passwordResetToken.create({
+      data: {
+        token: tokenHash,
+        userId,
+        channel,
+        destination,
+        expiresAt,
+      },
+    });
+
+    this.eventEmitter.emit(
+      PASSWORD_RESET_EVENT,
+      new PasswordResetEvent(
+        userId,
+        channel,
+        destination,
+        plainToken,
+        expiresAt,
+        userName,
+      ),
+    );
+  }
+
+  /** Validate a reset token without consuming it (used by magic-link page). */
+  async validateResetToken(dto: ValidateResetTokenDto) {
+    await this.findValidResetRecord(dto);
+    return { valid: true, message: 'Reset link is valid. Choose a new password.' };
+  }
+
+  async resetPassword(dto: ResetPasswordDto) {
+    const { userId, record } = await this.findValidResetRecord(dto);
+    const passwordHash = await this.hashPassword(dto.newPassword);
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.user.update({
+        where: { id: userId },
+        data: { passwordHash },
+      });
+      await tx.passwordResetToken.update({
+        where: { id: record.id },
+        data: { isUsed: true },
+      });
+      await tx.passwordResetToken.updateMany({
+        where: { userId, isUsed: false },
+        data: { isUsed: true },
+      });
+    });
+
+    return { message: 'Password updated successfully. You can sign in now.' };
+  }
+
+  private async findValidResetRecord(dto: ValidateResetTokenDto | ResetPasswordDto) {
+    const tokenHash = this.hashResetToken(dto.token.trim());
+    let userId: string | null = null;
+
+    if (dto.channel === ForgotPasswordChannelDto.EMAIL) {
+      const user = await this.prisma.user.findFirst({
+        where: {
+          email: { equals: dto.email!.trim(), mode: 'insensitive' },
+        },
+        select: { id: true, status: true },
+      });
+      if (!user || user.status === 'Inactive') {
+        throw new BadRequestException('Invalid or expired reset link.');
+      }
+      userId = user.id;
+    } else {
+      const normalized = validateAndCleanSriLankanNumber(dto.phoneNumber!);
+      const user = await this.prisma.user.findFirst({
+        where: {
+          OR: [
+            { phoneNumber: normalized },
+            { phoneNumber: `+${normalized}` },
+            { phoneNumber: `0${normalized.slice(2)}` },
+          ],
+          status: 'Active',
+        },
+        select: { id: true },
+      });
+      if (!user) {
+        throw new BadRequestException('Invalid or expired reset code.');
+      }
+      userId = user.id;
+    }
+
+    const record = await this.prisma.passwordResetToken.findFirst({
+      where: {
+        userId,
+        token: tokenHash,
+        channel: dto.channel as PasswordResetChannel,
+        isUsed: false,
+      },
+    });
+
+    if (!record || record.expiresAt <= new Date()) {
+      throw new BadRequestException(
+        dto.channel === ForgotPasswordChannelDto.EMAIL
+          ? 'Invalid or expired reset link.'
+          : 'Invalid or expired reset code.',
+      );
+    }
+
+    return { userId, record };
+  }
 
   private async hashPassword(password: string) {
     const salt = await bcrypt.genSalt(10);
@@ -139,11 +353,33 @@ export class AuthService {
       },
     });
 
+    // Draft public page — teacher publishes later from settings
+    let slug = slugFromName(displayName, dto.email);
+    try {
+      slug = assertValidSlug(slug);
+    } catch {
+      slug = `teacher-${user.id.slice(0, 8)}`;
+    }
+    const taken = await this.prisma.teacherProfile.findUnique({ where: { slug } });
+    if (taken) slug = `${slug}-${user.id.slice(0, 6)}`;
+
+    await this.prisma.teacherProfile.create({
+      data: {
+        userId: user.id,
+        slug,
+        displayName,
+        title: `${displayName}'s classes`,
+        description: 'Welcome to my learning page. Explore my quizzes below.',
+        isPublic: false,
+      },
+    });
+
     return {
       userId: user.id,
       workspaceId: workspace.id,
       accountType: 'TEACHER' as const,
       status: 'REGISTERED',
+      publicPagePath: `/t/${slug}`,
     };
   }
 

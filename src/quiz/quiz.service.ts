@@ -8,7 +8,13 @@ import { randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateQuizDto } from './dto/create-quiz.dto';
 import { UpdateQuizDto } from './dto/update-quiz.dto';
-import { AttemptStatus, QuestionStatus, QuizStatus, Prisma } from '@prisma/client';
+import {
+  AttemptStatus,
+  QuestionStatus,
+  QuizStatus,
+  Prisma,
+  TeacherQuizVisibility,
+} from '@prisma/client';
 import { publicQuestionConfig } from '../question/question-config';
 
 function toJson(value: { en: string; si: string; ta: string }): Prisma.InputJsonValue {
@@ -141,9 +147,44 @@ export class QuizService {
   }
 
   /** Public catalog — published quizzes only, no question content. */
-  async listPublishedQuizzes(guestSessionId?: string, userId?: string) {
+  async listPublishedQuizzes(
+    guestSessionId?: string,
+    userId?: string,
+    teacherSlug?: string,
+  ) {
+    const slug = teacherSlug?.trim().toLowerCase();
+    let teacherQuizFilter: { id?: { in: string[] } } = {};
+
+    if (slug) {
+      const profile = await this.prisma.teacherProfile.findFirst({
+        where: { slug, isPublic: true },
+        select: {
+          quizVisibility: true,
+          selectedQuizzes: { select: { quizId: true } },
+        },
+      });
+      if (!profile) {
+        return [];
+      }
+      if (profile.quizVisibility === TeacherQuizVisibility.SELECTED) {
+        const ids = profile.selectedQuizzes.map((r) => r.quizId);
+        if (!ids.length) return [];
+        teacherQuizFilter = { id: { in: ids } };
+      }
+    }
+
     const quizzes = await this.prisma.quiz.findMany({
-      where: { status: QuizStatus.Published },
+      where: {
+        status: QuizStatus.Published,
+        ...teacherQuizFilter,
+        ...(slug
+          ? {
+              createdBy: {
+                teacherProfile: { slug, isPublic: true },
+              },
+            }
+          : {}),
+      },
       orderBy: { createdAt: 'desc' },
       select: {
         id: true,
@@ -158,6 +199,13 @@ export class QuizService {
         priceLkr: true,
         course: { select: { id: true, title: true } },
         module: { select: { id: true, title: true } },
+        createdBy: {
+          select: {
+            id: true,
+            name: true,
+            teacherProfile: { select: { slug: true, displayName: true } },
+          },
+        },
         _count: { select: { quizQuestions: true, attempts: true } },
       },
     });

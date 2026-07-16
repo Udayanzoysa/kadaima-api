@@ -1,9 +1,13 @@
 import { Controller, Get, Post, Body, UseGuards, Req } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
 import { RegisterAccountDto } from './dto/register-account.dto';
 import { LoginDto } from './dto/login.dto';
 import { Verify2FaDto } from './dto/verify-2fa.dto';
+import { ForgotPasswordDto } from './dto/forgot-password.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
+import { ValidateResetTokenDto } from './dto/validate-reset-token.dto';
 import {
   ApiTags,
   ApiOperation,
@@ -52,6 +56,35 @@ export class AuthController {
   })
   async login(@Body() dto: LoginDto) {
     return this.authService.login(dto);
+  }
+
+  @Post('forgot-password')
+  @Throttle({ default: { limit: 5, ttl: 900_000 } })
+  @ApiOperation({
+    summary: 'Request a password reset code via email or SMS (anti-enumeration)',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Always returns a generic success message.',
+  })
+  forgotPassword(@Body() dto: ForgotPasswordDto) {
+    return this.authService.forgotPassword(dto);
+  }
+
+  @Post('validate-reset-token')
+  @Throttle({ default: { limit: 20, ttl: 900_000 } })
+  @ApiOperation({
+    summary: 'Validate a password-reset link/code without consuming it',
+  })
+  validateResetToken(@Body() dto: ValidateResetTokenDto) {
+    return this.authService.validateResetToken(dto);
+  }
+
+  @Post('reset-password')
+  @Throttle({ default: { limit: 10, ttl: 900_000 } })
+  @ApiOperation({ summary: 'Verify OTP/link token and set a new password' })
+  resetPassword(@Body() dto: ResetPasswordDto) {
+    return this.authService.resetPassword(dto);
   }
 
   @Post('2fa/verify')

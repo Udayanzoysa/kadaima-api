@@ -19,11 +19,21 @@ export class PublicQuizController {
   @ApiOperation({ summary: 'List published quizzes (no auth)' })
   @ApiQuery({ name: 'guestSessionId', required: false })
   @ApiQuery({ name: 'userId', required: false })
+  @ApiQuery({
+    name: 'teacherSlug',
+    required: false,
+    description: 'When set, only quizzes created by that public teacher',
+  })
   listPublished(
     @Query('guestSessionId') guestSessionId?: string,
     @Query('userId') userId?: string,
+    @Query('teacherSlug') teacherSlug?: string,
   ) {
-    return this.quizService.listPublishedQuizzes(guestSessionId, userId);
+    return this.quizService.listPublishedQuizzes(
+      guestSessionId,
+      userId,
+      teacherSlug,
+    );
   }
 
   @Get('in-progress')
