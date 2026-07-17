@@ -139,6 +139,22 @@ export class QuizService {
     });
   }
 
+  private mapQuizListItem<
+    T extends {
+      priceLkr: Prisma.Decimal | number | null;
+      _count: { quizQuestions: number; attempts: number };
+    },
+  >(q: T) {
+    return {
+      ...q,
+      priceLkr: q.priceLkr != null ? Number(q.priceLkr) : null,
+      _count: {
+        questions: q._count.quizQuestions,
+        attempts: q._count.attempts,
+      },
+    };
+  }
+
   async listQuizzes(status?: QuizStatus) {
     const quizzes = await this.prisma.quiz.findMany({
       where: status ? { status } : undefined,
@@ -150,14 +166,77 @@ export class QuizService {
         _count: { select: { quizQuestions: true, attempts: true } },
       },
     });
-    return quizzes.map((q) => ({
-      ...q,
-      priceLkr: q.priceLkr != null ? Number(q.priceLkr) : null,
-      _count: {
-        questions: q._count.quizQuestions,
-        attempts: q._count.attempts,
-      },
-    }));
+    return quizzes.map((q) => this.mapQuizListItem(q));
+  }
+
+  async listQuizzesPaginated(opts: {
+    status?: QuizStatus;
+    page?: number;
+    pageSize?: number;
+  }) {
+    const page = Math.max(1, opts.page ?? 1);
+    const pageSize = Math.min(100, Math.max(1, opts.pageSize ?? 10));
+    const where = opts.status ? { status: opts.status } : undefined;
+
+    const [total, quizzes] = await Promise.all([
+      this.prisma.quiz.count({ where }),
+      this.prisma.quiz.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+        include: {
+          course: true,
+          module: { select: { id: true, title: true } },
+          createdBy: { select: { id: true, email: true, name: true } },
+          _count: { select: { quizQuestions: true, attempts: true } },
+        },
+      }),
+    ]);
+
+    return {
+      items: quizzes.map((q) => this.mapQuizListItem(q)),
+      total,
+      page,
+      pageSize,
+      totalPages: Math.max(1, Math.ceil(total / pageSize)),
+    };
+  }
+
+  async bulkUpdateStatus(ids: string[], status: QuizStatus) {
+    if (!ids.length) throw new BadRequestException('No quiz IDs provided');
+    const result = await this.prisma.quiz.updateMany({
+      where: { id: { in: ids } },
+      data: { status },
+    });
+    return { updated: result.count, status };
+  }
+
+  async bulkDelete(ids: string[]) {
+    if (!ids.length) throw new BadRequestException('No quiz IDs provided');
+
+    const quizzes = await this.prisma.quiz.findMany({
+      where: { id: { in: ids } },
+      include: { _count: { select: { attempts: true } } },
+    });
+
+    let deleted = 0;
+    let archived = 0;
+
+    for (const quiz of quizzes) {
+      if (quiz._count.attempts > 0) {
+        await this.prisma.quiz.update({
+          where: { id: quiz.id },
+          data: { status: QuizStatus.Archived },
+        });
+        archived += 1;
+      } else {
+        await this.prisma.quiz.delete({ where: { id: quiz.id } });
+        deleted += 1;
+      }
+    }
+
+    return { deleted, archived, total: quizzes.length };
   }
 
   /** Shape quizQuestions into a flat `questions` array for API consumers. */

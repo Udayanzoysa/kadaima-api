@@ -21,6 +21,10 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { Audit } from '../audit/audit-log.decorator';
 import { CourseService } from './course.service';
 import {
+  BulkCourseIdsDto,
+  BulkModuleIdsDto,
+  BulkUpdateCourseStatusDto,
+  BulkUpdateModuleStatusDto,
   CreateCourseDto,
   CreateModuleDto,
   UpdateCourseDto,
@@ -37,10 +41,37 @@ export class CourseController {
   constructor(private courseService: CourseService) {}
 
   @Get()
-  @ApiOperation({ summary: 'List all courses' })
+  @ApiOperation({ summary: 'List courses (paginated when page/pageSize provided)' })
   @ApiQuery({ name: 'status', required: false, enum: CourseStatus })
-  listCourses(@Query('status') status?: CourseStatus) {
-    return this.courseService.listCourses(status);
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'pageSize', required: false, type: Number })
+  listCourses(
+    @Query('status') status?: CourseStatus,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+  ) {
+    if (page === undefined && pageSize === undefined) {
+      return this.courseService.listCourses(status);
+    }
+    return this.courseService.listCoursesPaginated({
+      status,
+      page: page ? Number(page) : 1,
+      pageSize: pageSize ? Number(pageSize) : 10,
+    });
+  }
+
+  @Patch('bulk/status')
+  @Audit('COURSES', AuditAction.CHANGE_STATUS)
+  @ApiOperation({ summary: 'Bulk update course status' })
+  bulkUpdateCourseStatus(@Body() dto: BulkUpdateCourseStatusDto) {
+    return this.courseService.bulkUpdateCourseStatus(dto.ids, dto.status);
+  }
+
+  @Post('bulk/delete')
+  @Audit('COURSES', AuditAction.DELETE)
+  @ApiOperation({ summary: 'Bulk delete courses (archives if quizzes exist)' })
+  bulkDeleteCourses(@Body() dto: BulkCourseIdsDto) {
+    return this.courseService.bulkDeleteCourses(dto.ids);
   }
 
   @Post()
@@ -78,13 +109,48 @@ export class CourseController {
   }
 
   @Get(':courseId/modules')
-  @ApiOperation({ summary: 'List modules for a course' })
+  @ApiOperation({ summary: 'List modules for a course (paginated when page/pageSize provided)' })
   @ApiQuery({ name: 'status', required: false, enum: CourseStatus })
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'pageSize', required: false, type: Number })
   listModules(
     @Param('courseId') courseId: string,
     @Query('status') status?: CourseStatus,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
   ) {
-    return this.courseService.listModules(courseId, status);
+    if (page === undefined && pageSize === undefined) {
+      return this.courseService.listModules(courseId, status);
+    }
+    return this.courseService.listModulesPaginated(courseId, {
+      status,
+      page: page ? Number(page) : 1,
+      pageSize: pageSize ? Number(pageSize) : 10,
+    });
+  }
+
+  @Patch(':courseId/modules/bulk/status')
+  @Audit('COURSES', AuditAction.CHANGE_STATUS)
+  @ApiOperation({ summary: 'Bulk update module status' })
+  bulkUpdateModuleStatus(
+    @Param('courseId') courseId: string,
+    @Body() dto: BulkUpdateModuleStatusDto,
+  ) {
+    return this.courseService.bulkUpdateModuleStatus(
+      courseId,
+      dto.ids,
+      dto.status,
+    );
+  }
+
+  @Post(':courseId/modules/bulk/delete')
+  @Audit('COURSES', AuditAction.DELETE)
+  @ApiOperation({ summary: 'Bulk delete modules' })
+  bulkDeleteModules(
+    @Param('courseId') courseId: string,
+    @Body() dto: BulkModuleIdsDto,
+  ) {
+    return this.courseService.bulkDeleteModules(courseId, dto.ids);
   }
 
   @Post(':courseId/modules')

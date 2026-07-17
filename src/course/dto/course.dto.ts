@@ -1,7 +1,9 @@
 import {
+  IsArray,
   IsEnum,
   IsInt,
   IsOptional,
+  IsUUID,
   Min,
   ValidateNested,
 } from 'class-validator';
@@ -103,6 +105,32 @@ export class UpdateModuleDto {
 }
 
 export class UpdateModuleStatusDto {
+  @ApiProperty({ enum: CourseStatus })
+  @IsEnum(CourseStatus)
+  status: CourseStatus;
+}
+
+export class BulkCourseIdsDto {
+  @ApiProperty({ type: [String] })
+  @IsArray()
+  @IsUUID('4', { each: true })
+  ids: string[];
+}
+
+export class BulkUpdateCourseStatusDto extends BulkCourseIdsDto {
+  @ApiProperty({ enum: CourseStatus })
+  @IsEnum(CourseStatus)
+  status: CourseStatus;
+}
+
+export class BulkModuleIdsDto {
+  @ApiProperty({ type: [String] })
+  @IsArray()
+  @IsUUID('4', { each: true })
+  ids: string[];
+}
+
+export class BulkUpdateModuleStatusDto extends BulkModuleIdsDto {
   @ApiProperty({ enum: CourseStatus })
   @IsEnum(CourseStatus)
   status: CourseStatus;

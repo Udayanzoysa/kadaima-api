@@ -113,3 +113,16 @@ export class UpdateQuizStatusDto {
   @IsEnum(QuizStatus)
   status: QuizStatus;
 }
+
+export class BulkQuizIdsDto {
+  @ApiProperty({ type: [String] })
+  @IsArray()
+  @IsUUID('4', { each: true })
+  ids: string[];
+}
+
+export class BulkUpdateQuizStatusDto extends BulkQuizIdsDto {
+  @ApiProperty({ enum: QuizStatus })
+  @IsEnum(QuizStatus)
+  status: QuizStatus;
+}

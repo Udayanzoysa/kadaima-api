@@ -27,7 +27,12 @@ import { extname, join } from 'path';
 import { existsSync, mkdirSync } from 'fs';
 import { QuizService } from './quiz.service';
 import { CreateQuizDto } from './dto/create-quiz.dto';
-import { UpdateQuizDto, UpdateQuizStatusDto } from './dto/update-quiz.dto';
+import {
+  BulkQuizIdsDto,
+  BulkUpdateQuizStatusDto,
+  UpdateQuizDto,
+  UpdateQuizStatusDto,
+} from './dto/update-quiz.dto';
 import { HeartbeatDto } from './dto/heartbeat.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { AuditAction, QuizStatus } from '@prisma/client';
@@ -112,10 +117,37 @@ export class QuizController {
   }
 
   @Get()
-  @ApiOperation({ summary: 'List all quizzes' })
+  @ApiOperation({ summary: 'List quizzes (paginated when page/pageSize provided)' })
   @ApiQuery({ name: 'status', required: false, enum: QuizStatus })
-  listQuizzes(@Query('status') status?: QuizStatus) {
-    return this.quizService.listQuizzes(status);
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'pageSize', required: false, type: Number })
+  listQuizzes(
+    @Query('status') status?: QuizStatus,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+  ) {
+    if (page === undefined && pageSize === undefined) {
+      return this.quizService.listQuizzes(status);
+    }
+    return this.quizService.listQuizzesPaginated({
+      status,
+      page: page ? Number(page) : 1,
+      pageSize: pageSize ? Number(pageSize) : 10,
+    });
+  }
+
+  @Patch('bulk/status')
+  @Audit('QUIZZES', AuditAction.CHANGE_STATUS)
+  @ApiOperation({ summary: 'Bulk update quiz status' })
+  bulkUpdateStatus(@Body() dto: BulkUpdateQuizStatusDto) {
+    return this.quizService.bulkUpdateStatus(dto.ids, dto.status);
+  }
+
+  @Post('bulk/delete')
+  @Audit('QUIZZES', AuditAction.DELETE)
+  @ApiOperation({ summary: 'Bulk delete quizzes (archives if attempts exist)' })
+  bulkDelete(@Body() dto: BulkQuizIdsDto) {
+    return this.quizService.bulkDelete(dto.ids);
   }
 
   @Post()

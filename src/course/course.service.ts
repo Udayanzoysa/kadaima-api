@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -27,6 +28,73 @@ export class CourseService {
         _count: { select: { quizzes: true, modules: true } },
       },
     });
+  }
+
+  async listCoursesPaginated(opts: {
+    status?: CourseStatus;
+    page?: number;
+    pageSize?: number;
+  }) {
+    const page = Math.max(1, opts.page ?? 1);
+    const pageSize = Math.min(100, Math.max(1, opts.pageSize ?? 10));
+    const where = opts.status ? { status: opts.status } : undefined;
+
+    const [total, items] = await Promise.all([
+      this.prisma.course.count({ where }),
+      this.prisma.course.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+        include: {
+          _count: { select: { quizzes: true, modules: true } },
+        },
+      }),
+    ]);
+
+    return {
+      items,
+      total,
+      page,
+      pageSize,
+      totalPages: Math.max(1, Math.ceil(total / pageSize)),
+    };
+  }
+
+  async bulkUpdateCourseStatus(ids: string[], status: CourseStatus) {
+    if (!ids.length) throw new BadRequestException('No course IDs provided');
+    const result = await this.prisma.course.updateMany({
+      where: { id: { in: ids } },
+      data: { status },
+    });
+    return { updated: result.count, status };
+  }
+
+  async bulkDeleteCourses(ids: string[]) {
+    if (!ids.length) throw new BadRequestException('No course IDs provided');
+
+    const courses = await this.prisma.course.findMany({
+      where: { id: { in: ids } },
+      include: { _count: { select: { quizzes: true } } },
+    });
+
+    let deleted = 0;
+    let archived = 0;
+
+    for (const course of courses) {
+      if (course._count.quizzes > 0) {
+        await this.prisma.course.update({
+          where: { id: course.id },
+          data: { status: CourseStatus.Archived },
+        });
+        archived += 1;
+      } else {
+        await this.prisma.course.delete({ where: { id: course.id } });
+        deleted += 1;
+      }
+    }
+
+    return { deleted, archived, total: courses.length };
   }
 
   async getCourse(id: string) {
@@ -113,6 +181,60 @@ export class CourseService {
       },
       orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
     });
+  }
+
+  async listModulesPaginated(
+    courseId: string,
+    opts: { status?: CourseStatus; page?: number; pageSize?: number },
+  ) {
+    await this.ensureCourse(courseId);
+    const page = Math.max(1, opts.page ?? 1);
+    const pageSize = Math.min(100, Math.max(1, opts.pageSize ?? 10));
+    const where = {
+      courseId,
+      ...(opts.status ? { status: opts.status } : {}),
+    };
+
+    const [total, items] = await Promise.all([
+      this.prisma.module.count({ where }),
+      this.prisma.module.findMany({
+        where,
+        orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+      }),
+    ]);
+
+    return {
+      items,
+      total,
+      page,
+      pageSize,
+      totalPages: Math.max(1, Math.ceil(total / pageSize)),
+    };
+  }
+
+  async bulkUpdateModuleStatus(
+    courseId: string,
+    ids: string[],
+    status: CourseStatus,
+  ) {
+    if (!ids.length) throw new BadRequestException('No module IDs provided');
+    await this.ensureCourse(courseId);
+    const result = await this.prisma.module.updateMany({
+      where: { id: { in: ids }, courseId },
+      data: { status },
+    });
+    return { updated: result.count, status };
+  }
+
+  async bulkDeleteModules(courseId: string, ids: string[]) {
+    if (!ids.length) throw new BadRequestException('No module IDs provided');
+    await this.ensureCourse(courseId);
+    const result = await this.prisma.module.deleteMany({
+      where: { id: { in: ids }, courseId },
+    });
+    return { deleted: result.count, archived: 0, total: result.count };
   }
 
   async getModule(courseId: string, id: string) {
