@@ -46,3 +46,10 @@ export function newPayHereOrderId(quizId: string): string {
     64,
   );
 }
+
+export function newSubscriptionOrderId(): string {
+  return `SUB${Date.now().toString(36)}${randomUUID().replace(/-/g, '').slice(0, 10)}`.slice(
+    0,
+    64,
+  );
+}

@@ -24,4 +24,11 @@ export const envValidationSchema = Joi.object({
   HUTCH_API_URL: Joi.string().uri().allow('').optional(),
   HUTCH_USERNAME: Joi.string().allow('').optional(),
   HUTCH_API_KEY: Joi.string().allow('').optional(),
+  GOOGLE_CLIENT_ID: Joi.string().allow('').optional(),
+
+  // AI question import (Gemini default)
+  AI_PROVIDER: Joi.string().valid('gemini', 'openai').default('gemini'),
+  AI_API_KEY: Joi.string().allow('').optional(),
+  AI_MODEL: Joi.string().allow('').optional(),
+  AI_MODEL_FALLBACKS: Joi.string().allow('').optional(),
 }).unknown(true);

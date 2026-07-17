@@ -14,7 +14,7 @@ import {
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiProperty } from '@nestjs/swagger';
-import { QuizStatus } from '@prisma/client';
+import { ContentLanguage, QuizStatus } from '@prisma/client';
 import { LocalizedTextDto } from './localized-text.dto';
 import { CreateQuestionDto } from './create-question.dto';
 
@@ -27,6 +27,16 @@ export class CreateQuizDto {
   @IsUUID()
   @IsOptional()
   moduleId?: string | null;
+
+  @ApiProperty({
+    enum: ContentLanguage,
+    default: ContentLanguage.en,
+    required: false,
+    description: 'Single content language for this quiz (no mixing)',
+  })
+  @IsEnum(ContentLanguage)
+  @IsOptional()
+  language?: ContentLanguage;
 
   @ApiProperty({ type: LocalizedTextDto })
   @ValidateNested()

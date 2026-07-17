@@ -7,11 +7,13 @@ import { AuthController } from './auth.controller';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { JwtPreAuthStrategy } from './strategies/jwt-pre-auth.strategy';
 import { NotificationModule } from '../notification/notification.module';
+import { AuditModule } from '../audit/audit.module';
 
 @Module({
   imports: [
     PassportModule,
     NotificationModule,
+    AuditModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],

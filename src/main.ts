@@ -17,6 +17,9 @@ if (!globalThis.crypto) {
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
 
+  // Trust the reverse proxy so req.ip reflects the real client IP (audit log).
+  app.set('trust proxy', true);
+
   app.useStaticAssets(join(process.cwd(), 'uploads'), { prefix: '/uploads/' });
 
   app.enableCors({

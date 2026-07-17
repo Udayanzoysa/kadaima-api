@@ -2,6 +2,7 @@ import {
   IsEmail,
   IsOptional,
   IsString,
+  IsUUID,
   Matches,
   MaxLength,
   MinLength,
@@ -38,4 +39,12 @@ export class StartGuestAttemptDto {
   @IsOptional()
   @IsEmail()
   email?: string;
+
+  @ApiProperty({
+    required: false,
+    description: 'Logged-in student id — used so account unlocks apply to guest start',
+  })
+  @IsOptional()
+  @IsUUID()
+  userId?: string;
 }

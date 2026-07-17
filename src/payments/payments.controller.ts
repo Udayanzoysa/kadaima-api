@@ -24,13 +24,15 @@ import {
   ApiQuery,
   ApiTags,
 } from '@nestjs/swagger';
-import { SlipSubmissionStatus } from '@prisma/client';
+import { AuditAction, SlipSubmissionStatus } from '@prisma/client';
 import { IsOptional, IsString, IsUUID, MaxLength, MinLength } from 'class-validator';
 import { existsSync, mkdirSync } from 'fs';
 import { diskStorage } from 'multer';
 import { extname, join } from 'path';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { Audit } from '../audit/audit-log.decorator';
 import { PayHereCheckoutDto } from './dto/payhere-checkout.dto';
+import { SubscriptionCheckoutDto } from './dto/subscription-checkout.dto';
 import {
   CreateVoucherDto,
   RedeemVoucherDto,
@@ -88,7 +90,42 @@ if (!existsSync(slipUploadDir)) {
 export class PaymentsController {
   constructor(private paymentsService: PaymentsService) {}
 
-  // ---- Public unlock methods ----
+  // ---- Public unlock / subscription methods ----
+
+  @Get('public/billing/monthly-fee')
+  @ApiOperation({
+    summary: 'Public billing config (monthly fee + payment mode)',
+  })
+  getMonthlyFee() {
+    return this.paymentsService.getPublicBilling();
+  }
+
+  @Get('public/payments/subscription/status')
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Current student subscription status' })
+  subscriptionStatus(@Req() req: any) {
+    return this.paymentsService.getSubscriptionStatus(req.user.id);
+  }
+
+  @Get('public/payments/my')
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Current student own payment history + last payment' })
+  myPayments(@Req() req: any) {
+    return this.paymentsService.listMyPayments(req.user.id);
+  }
+
+  @Post('public/payments/subscription/checkout')
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Create PayHere checkout for monthly student subscription' })
+  subscriptionCheckout(@Body() dto: SubscriptionCheckoutDto, @Req() req: any) {
+    return this.paymentsService.createSubscriptionCheckout({
+      ...dto,
+      userId: req.user.id,
+    });
+  }
 
   @Post('public/payments/payhere/checkout')
   @ApiBearerAuth()
@@ -203,6 +240,7 @@ export class PaymentsController {
   @Post('payments/admin/vouchers')
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard)
+  @Audit('PAYMENTS', AuditAction.CREATE)
   @ApiOperation({ summary: 'Create an unlock voucher' })
   createVoucher(@Body() dto: CreateVoucherDto) {
     return this.paymentsService.createVoucher(dto);
@@ -211,6 +249,7 @@ export class PaymentsController {
   @Patch('payments/admin/vouchers/:id')
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard)
+  @Audit('PAYMENTS', AuditAction.UPDATE)
   @ApiOperation({ summary: 'Update voucher (active / limits / expiry)' })
   updateVoucher(@Param('id') id: string, @Body() dto: UpdateVoucherDto) {
     return this.paymentsService.updateVoucher(id, dto);
@@ -228,6 +267,7 @@ export class PaymentsController {
   @Post('payments/admin/slips/:id/approve')
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard)
+  @Audit('PAYMENTS', AuditAction.CHANGE_STATUS)
   @ApiOperation({ summary: 'Approve a bank slip and unlock the quiz' })
   approveSlip(@Param('id') id: string) {
     return this.paymentsService.approveSlip(id);
@@ -236,6 +276,7 @@ export class PaymentsController {
   @Post('payments/admin/slips/:id/reject')
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard)
+  @Audit('PAYMENTS', AuditAction.CHANGE_STATUS)
   @ApiOperation({ summary: 'Reject a bank slip submission' })
   rejectSlip(@Param('id') id: string, @Body() dto: ReviewSlipDto) {
     return this.paymentsService.rejectSlip(id, dto.note);

@@ -23,7 +23,8 @@ import { UpdateUserDto } from './dto/update-user.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PoliciesGuard } from '../auth/guards/policies.guard';
 import { CheckPolicies } from '../auth/decorators/policies.decorator';
-import { Action, Subject } from '@prisma/client';
+import { Action, AuditAction, Subject } from '@prisma/client';
+import { Audit } from '../audit/audit-log.decorator';
 
 @ApiTags('User Management')
 @ApiBearerAuth()
@@ -75,6 +76,7 @@ export class UsersController {
 
   @Post()
   @CheckPolicies({ action: Action.CREATE, subject: Subject.USERS })
+  @Audit('USERS', AuditAction.CREATE)
   @ApiOperation({ summary: 'Onboards a new member into the tenant workspace' })
   @ApiResponse({ status: 201, description: 'User successfully created.' })
   async createUser(@Req() req: any, @Body() dto: any) {
@@ -90,6 +92,7 @@ export class UsersController {
 
   @Patch(':id')
   @CheckPolicies({ action: Action.EDIT, subject: Subject.USERS })
+  @Audit('USERS', AuditAction.UPDATE)
   @ApiOperation({ summary: 'Updates workspace user configurations' })
   async updateUser(
     @Req() req: any,
@@ -101,6 +104,7 @@ export class UsersController {
 
   @Post(':id/soft-delete')
   @CheckPolicies({ action: Action.EDIT, subject: Subject.USERS })
+  @Audit('USERS', AuditAction.CHANGE_STATUS)
   @ApiOperation({
     summary: 'Soft-delete a user (deactivate — status set to Inactive)',
   })
@@ -115,6 +119,7 @@ export class UsersController {
 
   @Post(':id/deactivate')
   @CheckPolicies({ action: Action.EDIT, subject: Subject.USERS })
+  @Audit('USERS', AuditAction.CHANGE_STATUS)
   @ApiOperation({
     summary: 'Deactivates a workspace user (alias of soft-delete)',
   })
@@ -128,6 +133,7 @@ export class UsersController {
 
   @Delete(':id')
   @CheckPolicies({ action: Action.EDIT, subject: Subject.USERS })
+  @Audit('USERS', AuditAction.DELETE)
   @ApiOperation({
     summary:
       'Hard-delete a user permanently. Quizzes they created are reassigned to you.',
@@ -143,6 +149,7 @@ export class UsersController {
 
   @Post(':id/activate-teacher')
   @CheckPolicies({ action: Action.EDIT, subject: Subject.USERS })
+  @Audit('USERS', AuditAction.CHANGE_STATUS)
   @ApiOperation({
     summary:
       'Activate a pending teacher profile after review (sends confirmation email)',

@@ -42,6 +42,13 @@ enum QuizStatus {
   Archived
 }
 
+/// Single content language for a quiz (no mixed-language quizzes).
+enum ContentLanguage {
+  en
+  si
+  ta
+}
+
 enum TeacherQuizVisibility {
   ALL
   SELECTED
@@ -122,6 +129,16 @@ enum PasswordResetChannel {
   SMS
 }
 
+enum AuditAction {
+  LOGIN
+  LOGIN_FAILED
+  SIGNUP
+  CREATE
+  UPDATE
+  DELETE
+  CHANGE_STATUS
+}
+
 model Permission {
   id              String         @id @default(uuid()) @db.Uuid
   action          Action
@@ -180,8 +197,10 @@ model User {
   paymentOrders      PaymentOrder[]
   quizUnlocks        QuizUnlock[]
   slipSubmissions    PaymentSlipSubmission[]
+  subscriptions      StudentSubscription[]
   passwordResetTokens PasswordResetToken[]
   teacherProfile     TeacherProfile?
+  auditLogs          AuditLog[]
 
   @@index([workspaceId])
   @@index([workspaceId, status])
@@ -332,15 +351,67 @@ model PasswordResetToken {
   @@map("password_reset_tokens")
 }
 
-// Platform-wide notification transport settings (SMTP + SMS). Singleton row id = "default".
+// Platform-wide settings (SMTP + SMS + billing). Singleton row id = "default".
 model SystemSetting {
-  id        String   @id @default("default")
-  smtp      Json?
-  sms       Json?
-  updatedAt DateTime @updatedAt @map("updated_at")
-  updatedBy String?  @map("updated_by")
+  id              String   @id @default("default")
+  smtp            Json?
+  sms             Json?
+  /// { monthlyStudentFeeLkr: number, paymentMode: "MIXED"|"MONTHLY_ONLY"|"QUIZ_ONLY" }
+  billing         Json?
+  /// { enabled, provider, model, apiKey?, fallbacks? } — Kadaima Expert chat + WhatsApp bot
+  ai              Json?
+  /// Super-admin toggle — when false, AuditService.log() becomes a no-op.
+  auditLogEnabled Boolean  @default(true) @map("audit_log_enabled")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+  updatedBy       String?  @map("updated_by")
 
   @@map("system_settings")
+}
+
+/// Immutable trail of major operations (auth events + CUD actions), super-admin only.
+model AuditLog {
+  id          String      @id @default(uuid()) @db.Uuid
+  action      AuditAction
+  /// Module name, e.g. "USERS", "QUIZZES", "AUTH" — free text, not FK'd to Subject enum.
+  subject     String      @db.VarChar(64)
+  description String?     @db.Text
+
+  actorId     String?     @map("actor_id") @db.Uuid
+  actor       User?       @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  /// Denormalized so history reads correctly even after the user is deleted.
+  actorEmail  String?     @map("actor_email")
+  actorName   String?     @map("actor_name")
+  actorRole   String?     @map("actor_role")
+
+  targetId    String?     @map("target_id")
+  ipAddress   String?     @map("ip_address")
+  userAgent   String?     @map("user_agent")
+  metadata    Json?
+
+  createdAt   DateTime    @default(now()) @map("created_at")
+
+  @@index([createdAt])
+  @@index([actorId])
+  @@index([subject])
+  @@index([action])
+  @@map("audit_logs")
+}
+
+/// Monthly student plan — unlocks eligible locked quizzes while active (see billing.paymentMode).
+model StudentSubscription {
+  id             String        @id @default(uuid()) @db.Uuid
+  userId         String        @map("user_id") @db.Uuid
+  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  startsAt       DateTime      @map("starts_at")
+  expiresAt      DateTime      @map("expires_at")
+  amountLkr      Decimal       @map("amount_lkr") @db.Decimal(12, 2)
+  paymentOrderId String?       @unique @map("payment_order_id") @db.Uuid
+  paymentOrder   PaymentOrder? @relation(fields: [paymentOrderId], references: [id], onDelete: SetNull)
+  createdAt      DateTime      @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("student_subscriptions")
 }
 
 model Workspace {
@@ -457,21 +528,23 @@ model Module {
 }
 
 model Quiz {
-  id                     String         @id @default(uuid()) @db.Uuid
-  courseId               String         @map("course_id") @db.Uuid
-  course                 Course         @relation(fields: [courseId], references: [id], onDelete: Cascade)
-  moduleId               String?        @map("module_id") @db.Uuid
-  module                 Module?        @relation(fields: [moduleId], references: [id], onDelete: SetNull)
+  id                     String          @id @default(uuid()) @db.Uuid
+  courseId               String          @map("course_id") @db.Uuid
+  course                 Course          @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  moduleId               String?         @map("module_id") @db.Uuid
+  module                 Module?         @relation(fields: [moduleId], references: [id], onDelete: SetNull)
+  /// Quiz content language — title, description, and all questions must match.
+  language               ContentLanguage @default(en)
   title                  Json
   description            Json?
-  coverImageUrl          String?        @map("cover_image_url")
-  durationMinutes        Int            @map("duration_minutes")
-  passingScorePercentage Int            @default(70) @map("passing_score_percentage")
-  maxAttempts            Int            @default(1) @map("max_attempts")
-  shuffleQuestions       Boolean        @default(false) @map("shuffle_questions")
-  requiresUnlock         Boolean        @default(false) @map("requires_unlock")
-  priceLkr               Decimal?       @map("price_lkr") @db.Decimal(12, 2)
-  status                 QuizStatus     @default(Draft)
+  coverImageUrl          String?         @map("cover_image_url")
+  durationMinutes        Int             @map("duration_minutes")
+  passingScorePercentage Int             @default(70) @map("passing_score_percentage")
+  maxAttempts            Int             @default(1) @map("max_attempts")
+  shuffleQuestions       Boolean         @default(false) @map("shuffle_questions")
+  requiresUnlock         Boolean         @default(false) @map("requires_unlock")
+  priceLkr               Decimal?        @map("price_lkr") @db.Decimal(12, 2)
+  status                 QuizStatus      @default(Draft)
   createdById            String         @map("created_by") @db.Uuid
   createdBy              User           @relation("QuizCreator", fields: [createdById], references: [id], onDelete: Restrict)
   createdAt              DateTime       @default(now()) @map("created_at")
@@ -494,8 +567,11 @@ model Quiz {
 model PaymentOrder {
   id                String             @id @default(uuid()) @db.Uuid
   orderId           String             @unique @map("order_id") @db.VarChar(64)
-  quizId            String             @map("quiz_id") @db.Uuid
-  quiz              Quiz               @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  /// Null for monthly subscription checkouts.
+  quizId            String?            @map("quiz_id") @db.Uuid
+  quiz              Quiz?              @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  /// QUIZ | SUBSCRIPTION
+  purpose           String             @default("QUIZ") @db.VarChar(32)
   guestSessionId    String?            @map("guest_session_id") @db.VarChar(64)
   userId            String?            @map("user_id") @db.Uuid
   user              User?              @relation(fields: [userId], references: [id], onDelete: SetNull)
@@ -507,10 +583,12 @@ model PaymentOrder {
   createdAt         DateTime           @default(now()) @map("created_at")
   updatedAt         DateTime           @updatedAt @map("updated_at")
   unlock            QuizUnlock?
+  subscription      StudentSubscription?
 
   @@index([quizId])
   @@index([guestSessionId])
   @@index([userId])
+  @@index([purpose])
   @@map("payment_orders")
 }
 

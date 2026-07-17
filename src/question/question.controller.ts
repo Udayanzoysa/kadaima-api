@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -22,12 +23,14 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { diskStorage } from 'multer';
+import { diskStorage, memoryStorage } from 'multer';
 import { extname, join } from 'path';
 import { existsSync, mkdirSync } from 'fs';
-import { QuestionStatus } from '@prisma/client';
+import { AuditAction, QuestionStatus } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { Audit } from '../audit/audit-log.decorator';
 import { QuestionService } from './question.service';
+import { AiQuestionImportService } from './ai-question-import.service';
 import {
   CreateBankQuestionDto,
   UpdateBankQuestionDto,
@@ -46,7 +49,10 @@ if (!existsSync(uploadDir)) {
 @UseGuards(JwtAuthGuard)
 @Controller('questions')
 export class QuestionController {
-  constructor(private questionService: QuestionService) {}
+  constructor(
+    private questionService: QuestionService,
+    private aiImport: AiQuestionImportService,
+  ) {}
 
   @Get()
   @ApiOperation({ summary: 'List question bank (paginated)' })
@@ -58,7 +64,6 @@ export class QuestionController {
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
   ) {
-    // Backward compatible: without page → full list (quiz builder attach)
     if (page === undefined && pageSize === undefined) {
       return this.questionService.list(status);
     }
@@ -70,15 +75,51 @@ export class QuestionController {
   }
 
   @Patch('bulk/status')
+  @Audit('QUESTIONS', AuditAction.CHANGE_STATUS)
   @ApiOperation({ summary: 'Bulk update question status' })
   bulkUpdateStatus(@Body() dto: BulkUpdateQuestionStatusDto) {
     return this.questionService.bulkUpdateStatus(dto.ids, dto.status);
   }
 
   @Post('bulk/delete')
+  @Audit('QUESTIONS', AuditAction.DELETE)
   @ApiOperation({ summary: 'Bulk delete questions (archives if in use)' })
   bulkDelete(@Body() dto: BulkQuestionIdsDto) {
     return this.questionService.bulkDelete(dto.ids);
+  }
+
+  @Post('ai/import-pdf')
+  @ApiOperation({
+    summary: 'Analyze an exam paper PDF with Gemini and return draft questions for review',
+  })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: { file: { type: 'string', format: 'binary' } },
+      required: ['file'],
+    },
+  })
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: memoryStorage(),
+      limits: { fileSize: 20 * 1024 * 1024 },
+      fileFilter: (_req, file, cb) => {
+        const ok =
+          file.mimetype === 'application/pdf' ||
+          file.originalname.toLowerCase().endsWith('.pdf');
+        if (!ok) {
+          return cb(new Error('Only PDF uploads are allowed') as any, false);
+        }
+        cb(null, true);
+      },
+    }),
+  )
+  async importPdfWithAi(@UploadedFile() file: Express.Multer.File) {
+    if (!file) {
+      throw new BadRequestException('PDF file is required');
+    }
+    return this.aiImport.importFromPdf(file);
   }
 
   @Post('upload-image')
@@ -116,6 +157,7 @@ export class QuestionController {
   }
 
   @Post()
+  @Audit('QUESTIONS', AuditAction.CREATE)
   @ApiOperation({ summary: 'Create a bank question' })
   create(@Body() dto: CreateBankQuestionDto, @Req() req: any) {
     return this.questionService.create(dto, req.user.id);
@@ -128,18 +170,21 @@ export class QuestionController {
   }
 
   @Put(':id')
+  @Audit('QUESTIONS', AuditAction.UPDATE)
   @ApiOperation({ summary: 'Update bank question (live across linked quizzes)' })
   update(@Param('id') id: string, @Body() dto: UpdateBankQuestionDto) {
     return this.questionService.update(id, dto);
   }
 
   @Patch(':id/status')
+  @Audit('QUESTIONS', AuditAction.CHANGE_STATUS)
   @ApiOperation({ summary: 'Update question status' })
   updateStatus(@Param('id') id: string, @Body() dto: UpdateQuestionStatusDto) {
     return this.questionService.updateStatus(id, dto.status);
   }
 
   @Delete(':id')
+  @Audit('QUESTIONS', AuditAction.DELETE)
   @ApiOperation({ summary: 'Delete question (archives if in use)' })
   delete(@Param('id') id: string) {
     return this.questionService.delete(id);

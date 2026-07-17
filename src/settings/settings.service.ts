@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
@@ -7,20 +8,58 @@ import {
   UpdateSmtpSettingsDto,
 } from './dto/notification-settings.dto';
 import { NotificationConfigService } from './notification-config.service';
+import { UpdateBillingSettingsDto } from './dto/billing-settings.dto';
+import { UpdateAiSettingsDto } from './dto/ai-settings.dto';
 import {
   DEFAULT_SMTP_CONFIG,
+  mergeBilling,
   SmsConfig,
   SmtpConfig,
 } from './notification-config.types';
 
 const SETTINGS_ID = 'default';
 
+export interface AiChatConfig {
+  enabled: boolean;
+  provider: 'gemini';
+  model: string;
+  apiKey: string;
+  fallbacks: string;
+}
+
 @Injectable()
 export class SettingsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notificationConfig: NotificationConfigService,
+    private readonly config: ConfigService,
   ) {}
+
+  async getBillingSettings() {
+    const row = await this.ensureRow();
+    const billing = mergeBilling(row.billing);
+    return {
+      monthlyStudentFeeLkr: billing.monthlyStudentFeeLkr,
+      paymentMode: billing.paymentMode,
+      updatedAt: row.updatedAt,
+    };
+  }
+
+  async updateBillingSettings(dto: UpdateBillingSettingsDto, updatedBy?: string) {
+    await this.ensureRow();
+    const billing = mergeBilling({
+      monthlyStudentFeeLkr: dto.monthlyStudentFeeLkr,
+      paymentMode: dto.paymentMode,
+    });
+    await this.prisma.systemSetting.update({
+      where: { id: SETTINGS_ID },
+      data: {
+        billing: billing as unknown as Prisma.InputJsonValue,
+        updatedBy: updatedBy ?? null,
+      },
+    });
+    return this.getBillingSettings();
+  }
 
   async getNotificationSettings() {
     const row = await this.ensureRow();
@@ -47,6 +86,76 @@ export class SettingsService {
         notifyApiUrl: sms.notifyApiUrl,
       },
       updatedAt: row.updatedAt,
+    };
+  }
+
+  /** Resolved AI config for runtime use (includes secret key). */
+  async getAiChatConfig(): Promise<AiChatConfig> {
+    const row = await this.ensureRow();
+    return this.mergeAi(row.ai);
+  }
+
+  async getAiSettings() {
+    const cfg = await this.getAiChatConfig();
+    return {
+      enabled: cfg.enabled,
+      provider: cfg.provider,
+      model: cfg.model,
+      fallbacks: cfg.fallbacks,
+      hasApiKey: Boolean(cfg.apiKey),
+      /** Hint only — Flash Live is voice; text chat uses Flash (non-Live). */
+      note:
+        'Kadaima Expert + WhatsApp use Gemini text models (generateContent). ' +
+        'Gemini 3 Flash Live is a separate voice Live API and is not used for this chatbot.',
+      recommendedModel: 'gemini-3-flash-preview',
+    };
+  }
+
+  async updateAiSettings(dto: UpdateAiSettingsDto, updatedBy?: string) {
+    const current = await this.getAiChatConfig();
+    const next: AiChatConfig = {
+      enabled: dto.enabled ?? current.enabled,
+      provider: dto.provider ?? current.provider,
+      model: (dto.model ?? current.model).trim() || 'gemini-3-flash-preview',
+      apiKey:
+        dto.apiKey !== undefined && dto.apiKey.trim().length > 0
+          ? dto.apiKey.trim()
+          : current.apiKey,
+      fallbacks:
+        dto.fallbacks !== undefined
+          ? dto.fallbacks.trim()
+          : current.fallbacks,
+    };
+
+    await this.prisma.systemSetting.update({
+      where: { id: SETTINGS_ID },
+      data: {
+        ai: next as unknown as Prisma.InputJsonValue,
+        updatedBy: updatedBy ?? null,
+      },
+    });
+
+    return this.getAiSettings();
+  }
+
+  private mergeAi(raw: unknown): AiChatConfig {
+    const obj = (raw && typeof raw === 'object' ? raw : {}) as Partial<AiChatConfig>;
+    const envKey = this.config.get<string>('AI_API_KEY') || process.env.AI_API_KEY || '';
+    const envModel =
+      this.config.get<string>('AI_MODEL') ||
+      process.env.AI_MODEL ||
+      'gemini-3-flash-preview';
+    const envFallbacks =
+      this.config.get<string>('AI_MODEL_FALLBACKS') ||
+      process.env.AI_MODEL_FALLBACKS ||
+      'gemini-2.0-flash,gemini-2.0-flash-lite,gemini-2.5-flash';
+
+    return {
+      enabled: obj.enabled !== false,
+      provider: 'gemini',
+      model: (obj.model || envModel).trim() || 'gemini-3-flash-preview',
+      apiKey: (obj.apiKey || envKey).trim(),
+      fallbacks: (obj.fallbacks || envFallbacks).trim(),
     };
   }
 

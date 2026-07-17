@@ -19,8 +19,14 @@ import {
   UpdateVoucherDto,
 } from './dto/unlock-methods.dto';
 import {
+  isSpecialPricedQuiz,
+  mergeBilling,
+  type PaymentMode,
+} from '../settings/notification-config.types';
+import {
   formatPayHereAmount,
   newPayHereOrderId,
+  newSubscriptionOrderId,
   payhereCheckoutHash,
   payhereNotifyHash,
 } from './payhere.util';
@@ -28,6 +34,156 @@ import {
 @Injectable()
 export class PaymentsService {
   constructor(private prisma: PrismaService) {}
+
+  private async getBilling() {
+    const row = await this.prisma.systemSetting.findUnique({
+      where: { id: 'default' },
+    });
+    return mergeBilling(row?.billing);
+  }
+
+  async getMonthlyFeeLkr(): Promise<number> {
+    return (await this.getBilling()).monthlyStudentFeeLkr;
+  }
+
+  async getPublicBilling() {
+    const billing = await this.getBilling();
+    return {
+      monthlyStudentFeeLkr: billing.monthlyStudentFeeLkr,
+      paymentMode: billing.paymentMode as PaymentMode,
+    };
+  }
+
+  async getSubscriptionStatus(userId: string) {
+    const sub = await this.prisma.studentSubscription.findFirst({
+      where: { userId, expiresAt: { gt: new Date() } },
+      orderBy: { expiresAt: 'desc' },
+    });
+    const billing = await this.getBilling();
+    return {
+      active: Boolean(sub),
+      expiresAt: sub?.expiresAt ?? null,
+      startsAt: sub?.startsAt ?? null,
+      monthlyStudentFeeLkr: billing.monthlyStudentFeeLkr,
+      paymentMode: billing.paymentMode,
+    };
+  }
+
+  async hasActiveSubscription(userId?: string | null): Promise<boolean> {
+    if (!userId) return false;
+    const sub = await this.prisma.studentSubscription.findFirst({
+      where: { userId, expiresAt: { gt: new Date() } },
+      select: { id: true },
+    });
+    return Boolean(sub);
+  }
+
+  private async activateSubscription(params: {
+    userId: string;
+    amountLkr: number | string;
+    paymentOrderId?: string | null;
+  }) {
+    const now = new Date();
+    const existing = await this.prisma.studentSubscription.findFirst({
+      where: { userId: params.userId },
+      orderBy: { expiresAt: 'desc' },
+    });
+
+    const base =
+      existing && existing.expiresAt.getTime() > now.getTime()
+        ? existing.expiresAt
+        : now;
+    const expiresAt = new Date(base);
+    expiresAt.setDate(expiresAt.getDate() + 30);
+
+    await this.prisma.studentSubscription.create({
+      data: {
+        id: randomUUID(),
+        userId: params.userId,
+        startsAt: now,
+        expiresAt,
+        amountLkr: params.amountLkr,
+        paymentOrderId: params.paymentOrderId || null,
+      },
+    });
+
+    return { expiresAt };
+  }
+
+  async createSubscriptionCheckout(dto: {
+    userId: string;
+    guestSessionId?: string;
+    firstName?: string;
+    lastName?: string;
+    email?: string;
+    phone?: string;
+    address?: string;
+    city?: string;
+  }) {
+    if (!dto.userId) {
+      throw new BadRequestException('Login is required before subscribing.');
+    }
+
+    const billing = await this.getBilling();
+    if (billing.paymentMode === 'QUIZ_ONLY') {
+      throw new BadRequestException(
+        'Monthly subscriptions are disabled. This platform uses per-quiz payments only.',
+      );
+    }
+
+    const fee = billing.monthlyStudentFeeLkr;
+    if (fee <= 0) {
+      throw new BadRequestException(
+        'Monthly subscription fee is not configured. Ask an admin to set it in Settings → Subscription.',
+      );
+    }
+
+    const amount = formatPayHereAmount(fee);
+    const orderId = newSubscriptionOrderId();
+    const cfg = this.payhereConfig();
+    const hash = payhereCheckoutHash({
+      merchantId: cfg.merchantId,
+      orderId,
+      amount,
+      currency: 'LKR',
+      merchantSecret: cfg.merchantSecret,
+    });
+
+    await this.prisma.paymentOrder.create({
+      data: {
+        id: randomUUID(),
+        orderId,
+        quizId: null,
+        purpose: 'SUBSCRIPTION',
+        guestSessionId: dto.guestSessionId || null,
+        userId: dto.userId,
+        amountLkr: fee,
+        currency: 'LKR',
+        status: PaymentOrderStatus.Pending,
+        provider: PaymentProvider.PayHere,
+      },
+    });
+
+    return {
+      sandbox: cfg.sandbox,
+      merchant_id: cfg.merchantId,
+      return_url: `${cfg.frontendUrl}/?payment=subscription-return`,
+      cancel_url: `${cfg.frontendUrl}/?payment=subscription-cancel`,
+      notify_url: cfg.notifyUrl,
+      order_id: orderId,
+      items: 'Kadaima monthly student subscription',
+      amount,
+      currency: 'LKR',
+      hash,
+      first_name: dto.firstName || 'Student',
+      last_name: dto.lastName || 'Student',
+      email: dto.email || 'guest@example.com',
+      phone: dto.phone || '0700000000',
+      address: dto.address || 'Colombo',
+      city: dto.city || 'Colombo',
+      country: 'Sri Lanka',
+    };
+  }
 
   private payhereConfig() {
     const merchantId = process.env.PAYHERE_MERCHANT_ID?.trim();
@@ -174,13 +330,25 @@ export class PaymentsService {
     if (!dto.userId) {
       throw new BadRequestException('Login is required before payment.');
     }
+    const billing = await this.getBilling();
+    if (billing.paymentMode === 'MONTHLY_ONLY') {
+      throw new BadRequestException(
+        'Per-quiz payments are disabled. Subscribe monthly to unlock locked quizzes.',
+      );
+    }
     const quiz = await this.assertLockedQuiz(dto.quizId);
-    if (quiz.priceLkr == null) {
-      throw new BadRequestException('This quiz has no price configured.');
+    const priceLkr =
+      quiz.priceLkr != null ? Number(quiz.priceLkr.toString()) : null;
+    if (!isSpecialPricedQuiz(priceLkr)) {
+      throw new BadRequestException(
+        billing.paymentMode === 'MIXED'
+          ? 'This quiz is covered by the monthly subscription (no separate price).'
+          : 'This quiz has no price configured.',
+      );
     }
     await this.assertNotUnlocked(quiz.id, dto.guestSessionId, dto.userId);
 
-    const amount = formatPayHereAmount(quiz.priceLkr.toString());
+    const amount = formatPayHereAmount(priceLkr!);
     const orderId = newPayHereOrderId(quiz.id);
     const cfg = this.payhereConfig();
     const hash = payhereCheckoutHash({
@@ -198,7 +366,7 @@ export class PaymentsService {
         quizId: quiz.id,
         guestSessionId: dto.guestSessionId || null,
         userId: dto.userId,
-        amountLkr: quiz.priceLkr,
+        amountLkr: priceLkr!,
         currency: 'LKR',
         status: PaymentOrderStatus.Pending,
         provider: PaymentProvider.PayHere,
@@ -276,13 +444,24 @@ export class PaymentsService {
         },
       });
 
-      await this.grantUnlock({
-        quizId: order.quizId,
-        guestSessionId: order.guestSessionId,
-        userId: order.userId,
-        method: UnlockMethod.PayHere,
-        paymentOrderId: order.id,
-      });
+      if (order.purpose === 'SUBSCRIPTION') {
+        if (!order.userId) {
+          throw new BadRequestException('Subscription payment is missing user.');
+        }
+        await this.activateSubscription({
+          userId: order.userId,
+          amountLkr: Number(order.amountLkr),
+          paymentOrderId: order.id,
+        });
+      } else if (order.quizId) {
+        await this.grantUnlock({
+          quizId: order.quizId,
+          guestSessionId: order.guestSessionId,
+          userId: order.userId,
+          method: UnlockMethod.PayHere,
+          paymentOrderId: order.id,
+        });
+      }
 
       return { ok: true };
     }
@@ -328,13 +507,24 @@ export class PaymentsService {
       data: { status: PaymentOrderStatus.Paid },
     });
 
-    await this.grantUnlock({
-      quizId: order.quizId,
-      guestSessionId: order.guestSessionId,
-      userId: order.userId,
-      method: UnlockMethod.PayHere,
-      paymentOrderId: order.id,
-    });
+    if (order.purpose === 'SUBSCRIPTION') {
+      if (!order.userId) {
+        throw new BadRequestException('Subscription payment is missing user.');
+      }
+      await this.activateSubscription({
+        userId: order.userId,
+        amountLkr: Number(order.amountLkr),
+        paymentOrderId: order.id,
+      });
+    } else if (order.quizId) {
+      await this.grantUnlock({
+        quizId: order.quizId,
+        guestSessionId: order.guestSessionId,
+        userId: order.userId,
+        method: UnlockMethod.PayHere,
+        paymentOrderId: order.id,
+      });
+    }
 
     return { ok: true };
   }
@@ -501,20 +691,24 @@ export class PaymentsService {
   async approveSlip(id: string) {
     const slip = await this.prisma.paymentSlipSubmission.findUnique({
       where: { id },
-    });
-    if (!slip) throw new NotFoundException('Slip not found');
-    if (slip.status === SlipSubmissionStatus.Approved) {
-      return { ok: true, alreadyApproved: true };
-    }
-
-    await this.prisma.paymentSlipSubmission.update({
-      where: { id },
-      data: {
-        status: SlipSubmissionStatus.Approved,
-        reviewedAt: new Date(),
+      include: {
+        quiz: { select: { id: true, priceLkr: true } },
       },
     });
+    if (!slip) throw new NotFoundException('Slip not found');
 
+    const alreadyApproved = slip.status === SlipSubmissionStatus.Approved;
+    if (!alreadyApproved) {
+      await this.prisma.paymentSlipSubmission.update({
+        where: { id },
+        data: {
+          status: SlipSubmissionStatus.Approved,
+          reviewedAt: new Date(),
+        },
+      });
+    }
+
+    // Always ensure unlock row exists (safe to re-run if already approved).
     await this.grantUnlock({
       quizId: slip.quizId,
       guestSessionId: slip.guestSessionId,
@@ -523,7 +717,23 @@ export class PaymentsService {
       slipSubmissionId: slip.id,
     });
 
-    return { ok: true };
+    const billing = await this.getBilling();
+    // In monthly-only mode a bank slip counts as paying the monthly plan.
+    if (billing.paymentMode === 'MONTHLY_ONLY' && slip.userId) {
+      const hasSub = await this.hasActiveSubscription(slip.userId);
+      if (!hasSub) {
+        const amount =
+          slip.quiz.priceLkr != null
+            ? Number(slip.quiz.priceLkr)
+            : billing.monthlyStudentFeeLkr;
+        await this.activateSubscription({
+          userId: slip.userId,
+          amountLkr: amount > 0 ? amount : billing.monthlyStudentFeeLkr,
+        });
+      }
+    }
+
+    return { ok: true, alreadyApproved };
   }
 
   async rejectSlip(id: string, note?: string) {
@@ -540,6 +750,109 @@ export class PaymentsService {
         note: note?.trim() || slip.note,
       },
     });
+  }
+
+  /** Logged-in student's own payment history (PayHere orders, subscription, vouchers, slips). */
+  async listMyPayments(userId: string) {
+    const [orders, unlocks, subscriptions] = await Promise.all([
+      this.prisma.paymentOrder.findMany({
+        where: { userId },
+        orderBy: { createdAt: 'desc' },
+        include: { quiz: { select: { id: true, title: true } } },
+      }),
+      this.prisma.quizUnlock.findMany({
+        where: { userId, method: { not: UnlockMethod.PayHere } },
+        orderBy: { createdAt: 'desc' },
+        include: {
+          quiz: { select: { id: true, title: true, priceLkr: true } },
+          voucher: true,
+          slipSubmission: true,
+        },
+      }),
+      this.prisma.studentSubscription.findMany({
+        where: { userId },
+        orderBy: { createdAt: 'desc' },
+      }),
+    ]);
+
+    type Row = {
+      id: string;
+      method: 'PayHere' | 'Voucher' | 'Slip' | 'Subscription';
+      status: string;
+      amountLkr: number | null;
+      title: unknown;
+      reference: string | null;
+      createdAt: Date;
+    };
+
+    const rows: Row[] = [];
+
+    for (const order of orders) {
+      rows.push({
+        id: `order:${order.id}`,
+        method: 'PayHere',
+        status: order.status,
+        amountLkr: Number(order.amountLkr),
+        title:
+          order.purpose === 'SUBSCRIPTION'
+            ? { en: 'Monthly subscription', si: 'මාසික දායකත්වය', ta: 'மாதாந்திர சந்தா' }
+            : order.quiz?.title ?? null,
+        reference: order.providerPaymentId || order.orderId,
+        createdAt: order.createdAt,
+      });
+    }
+
+    for (const unlock of unlocks) {
+      if (unlock.method === UnlockMethod.Voucher) {
+        rows.push({
+          id: `unlock:${unlock.id}`,
+          method: 'Voucher',
+          status: 'Unlocked',
+          amountLkr: unlock.quiz.priceLkr != null ? Number(unlock.quiz.priceLkr) : null,
+          title: unlock.quiz.title,
+          reference: unlock.voucher?.code || null,
+          createdAt: unlock.createdAt,
+        });
+      } else if (unlock.method === UnlockMethod.Slip) {
+        rows.push({
+          id: `unlock:${unlock.id}`,
+          method: 'Slip',
+          status: 'Approved',
+          amountLkr: unlock.quiz.priceLkr != null ? Number(unlock.quiz.priceLkr) : null,
+          title: unlock.quiz.title,
+          reference: unlock.slipSubmission?.bankReference || null,
+          createdAt: unlock.createdAt,
+        });
+      }
+    }
+
+    for (const sub of subscriptions) {
+      rows.push({
+        id: `sub:${sub.id}`,
+        method: 'Subscription',
+        status: sub.expiresAt.getTime() > Date.now() ? 'Active' : 'Expired',
+        amountLkr: Number(sub.amountLkr),
+        title: { en: 'Monthly subscription', si: 'මාසික දායකත්වය', ta: 'மாதாந்திர சந்தா' },
+        reference: sub.paymentOrderId,
+        createdAt: sub.createdAt,
+      });
+    }
+
+    rows.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+
+    const successStatuses = new Set(['Paid', 'Unlocked', 'Approved', 'Active']);
+    const lastPayment = rows.find((r) => successStatuses.has(r.status)) ?? null;
+
+    const activeSubscription =
+      subscriptions.find((s) => s.expiresAt.getTime() > Date.now()) ?? null;
+
+    return {
+      lastPayment,
+      history: rows,
+      subscription: activeSubscription
+        ? { active: true, expiresAt: activeSubscription.expiresAt, startsAt: activeSubscription.startsAt }
+        : { active: false, expiresAt: null, startsAt: null },
+    };
   }
 
   /** Unified admin ledger: PayHere orders, vouchers unlocks, bank slips. */
@@ -629,10 +942,16 @@ export class PaymentsService {
         method: 'PayHere',
         status: order.status,
         amountLkr: Number(order.amountLkr),
-        quiz: order.quiz,
+        quiz: order.quiz ?? {
+          id: 'subscription',
+          title: { en: 'Monthly subscription', si: '', ta: '' },
+        },
         user: resolveStudent(order.user, order.guestSessionId),
         reference: order.providerPaymentId || order.orderId,
-        details: `Order ${order.orderId}${order.providerPaymentId ? ` · Pay ${order.providerPaymentId}` : ''}`,
+        details:
+          order.purpose === 'SUBSCRIPTION'
+            ? `Subscription ${order.orderId}`
+            : `Order ${order.orderId}${order.providerPaymentId ? ` · Pay ${order.providerPaymentId}` : ''}`,
         createdAt: order.createdAt,
         refId: order.id,
       });

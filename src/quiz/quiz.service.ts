@@ -10,15 +10,82 @@ import { CreateQuizDto } from './dto/create-quiz.dto';
 import { UpdateQuizDto } from './dto/update-quiz.dto';
 import {
   AttemptStatus,
+  ContentLanguage,
   QuestionStatus,
   QuizStatus,
   Prisma,
   TeacherQuizVisibility,
 } from '@prisma/client';
 import { publicQuestionConfig } from '../question/question-config';
+import {
+  isSpecialPricedQuiz,
+  mergeBilling,
+  type PaymentMode,
+} from '../settings/notification-config.types';
 
-function toJson(value: { en: string; si: string; ta: string }): Prisma.InputJsonValue {
+type Localized = { en: string; si: string; ta: string };
+
+function toJson(value: Localized): Prisma.InputJsonValue {
   return value as Prisma.InputJsonValue;
+}
+
+function plainText(value: string | null | undefined): string {
+  if (!value) return '';
+  return value
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function localeText(text: unknown, language: ContentLanguage): string {
+  if (!text || typeof text !== 'object') return '';
+  const record = text as Partial<Localized>;
+  return plainText(record[language]);
+}
+
+/** Keep only the quiz language filled — enforces one language per quiz. */
+function toMonoLocalized(text: Localized, language: ContentLanguage): Localized {
+  return {
+    en: language === ContentLanguage.en ? text.en ?? '' : '',
+    si: language === ContentLanguage.si ? text.si ?? '' : '',
+    ta: language === ContentLanguage.ta ? text.ta ?? '' : '',
+  };
+}
+
+function assertLocaleContent(
+  text: unknown,
+  language: ContentLanguage,
+  label: string,
+  minLen = 1,
+) {
+  const value = localeText(text, language);
+  if (value.length < minLen) {
+    throw new BadRequestException(
+      `${label} must be provided in the quiz language (${language}).`,
+    );
+  }
+}
+
+async function assertQuestionsMatchLanguage(
+  tx: Prisma.TransactionClient,
+  questionIds: string[],
+  language: ContentLanguage,
+) {
+  for (const questionId of questionIds) {
+    const question = await tx.question.findUnique({
+      where: { id: questionId },
+      include: { choices: true },
+    });
+    if (!question) {
+      throw new BadRequestException(`Question not found: ${questionId}`);
+    }
+    assertLocaleContent(question.questionText, language, 'Question text', 3);
+    if (question.type === 'MCQ' || question.type === 'SEQUENCE') {
+      for (const choice of question.choices) {
+        assertLocaleContent(choice.choiceText, language, 'Answer choice', 1);
+      }
+    }
+  }
 }
 
 function shuffleIds(ids: string[]): string[] {
@@ -212,6 +279,9 @@ export class QuizService {
 
     const unlockedIds = new Set<string>();
     const quizIds = quizzes.map((q) => q.id);
+    const paymentMode = await this.getPaymentMode();
+    const hasSub = userId ? await this.hasActiveSubscription(userId) : false;
+
     if (userId && quizIds.length) {
       const unlocks = await this.prisma.quizUnlock.findMany({
         where: { userId, quizId: { in: quizIds } },
@@ -227,15 +297,25 @@ export class QuizService {
       unlocks.forEach((u) => unlockedIds.add(u.quizId));
     }
 
-    return quizzes.map((q) => ({
-      ...q,
-      priceLkr: q.priceLkr != null ? Number(q.priceLkr) : null,
-      unlocked: q.requiresUnlock ? unlockedIds.has(q.id) : true,
-      _count: {
-        questions: q._count.quizQuestions,
-        attempts: q._count.attempts,
-      },
-    }));
+    return quizzes.map((q) => {
+      const priceLkr = q.priceLkr != null ? Number(q.priceLkr) : null;
+      return {
+        ...q,
+        priceLkr,
+        unlocked: q.requiresUnlock
+          ? this.resolveUnlocked({
+              paymentMode,
+              hasSub,
+              hasDirectUnlock: unlockedIds.has(q.id),
+              priceLkr,
+            })
+          : true,
+        _count: {
+          questions: q._count.quizQuestions,
+          attempts: q._count.attempts,
+        },
+      };
+    });
   }
 
   async getQuizAccess(quizId: string, guestSessionId?: string, userId?: string) {
@@ -263,25 +343,75 @@ export class QuizService {
     };
   }
 
+  async hasActiveSubscription(userId?: string): Promise<boolean> {
+    if (!userId) return false;
+    const sub = await this.prisma.studentSubscription.findFirst({
+      where: { userId, expiresAt: { gt: new Date() } },
+      select: { id: true },
+    });
+    return Boolean(sub);
+  }
+
+  private async getPaymentMode(): Promise<PaymentMode> {
+    const row = await this.prisma.systemSetting.findUnique({
+      where: { id: 'default' },
+      select: { billing: true },
+    });
+    return mergeBilling(row?.billing).paymentMode;
+  }
+
+  /** Whether subscription / direct unlock grants access for this lock + price. */
+  private resolveUnlocked(params: {
+    paymentMode: PaymentMode;
+    hasSub: boolean;
+    hasDirectUnlock: boolean;
+    priceLkr: number | null;
+  }): boolean {
+    if (params.hasDirectUnlock) return true;
+    if (params.paymentMode === 'QUIZ_ONLY') return false;
+    if (params.paymentMode === 'MONTHLY_ONLY') return params.hasSub;
+    // MIXED: monthly covers unpriced locks; priced quizzes need direct unlock
+    if (isSpecialPricedQuiz(params.priceLkr)) return false;
+    return params.hasSub;
+  }
+
   async isQuizUnlocked(
     quizId: string,
     opts: { guestSessionId?: string; userId?: string },
   ): Promise<boolean> {
+    const quiz = await this.prisma.quiz.findUnique({
+      where: { id: quizId },
+      select: { requiresUnlock: true, priceLkr: true },
+    });
+    if (!quiz) return false;
+    if (!quiz.requiresUnlock) return true;
+
+    let hasDirectUnlock = false;
     if (opts.guestSessionId) {
       const row = await this.prisma.quizUnlock.findFirst({
         where: { quizId, guestSessionId: opts.guestSessionId },
         select: { id: true },
       });
-      if (row) return true;
+      if (row) hasDirectUnlock = true;
     }
-    if (opts.userId) {
+    if (!hasDirectUnlock && opts.userId) {
       const row = await this.prisma.quizUnlock.findFirst({
         where: { quizId, userId: opts.userId },
         select: { id: true },
       });
-      if (row) return true;
+      if (row) hasDirectUnlock = true;
     }
-    return false;
+
+    const paymentMode = await this.getPaymentMode();
+    const hasSub = await this.hasActiveSubscription(opts.userId);
+    const priceLkr = quiz.priceLkr != null ? Number(quiz.priceLkr) : null;
+
+    return this.resolveUnlocked({
+      paymentMode,
+      hasSub,
+      hasDirectUnlock,
+      priceLkr,
+    });
   }
 
   private async assertQuizUnlocked(
@@ -292,7 +422,20 @@ export class QuizService {
     const unlocked = await this.isQuizUnlocked(quiz.id, opts);
     if (!unlocked) {
       throw new ForbiddenException(
-        'This quiz requires payment verification before you can attempt it.',
+        'This quiz is locked. Unlock it via the available payment option before you can attempt it.',
+      );
+    }
+  }
+
+  private async assertUnlockPricing(
+    requiresUnlock: boolean,
+    priceLkr?: number | null,
+  ) {
+    if (!requiresUnlock) return;
+    const mode = await this.getPaymentMode();
+    if (mode === 'QUIZ_ONLY' && !isSpecialPricedQuiz(priceLkr)) {
+      throw new BadRequestException(
+        'Per-quiz payment mode requires a Price (LKR) greater than 0 for locked quizzes.',
       );
     }
   }
@@ -368,6 +511,7 @@ export class QuizService {
       school: string;
       mobileNumber: string;
       email?: string;
+      userId?: string;
     },
   ) {
     const quiz = await this.prisma.quiz.findUnique({ where: { id: quizId } });
@@ -378,8 +522,8 @@ export class QuizService {
 
     await this.assertQuizUnlocked(quiz, {
       guestSessionId: lead.guestSessionId,
+      userId: lead.userId,
     });
-
     const guestLead = await this.prisma.guestLead.upsert({
       where: { guestSessionId: lead.guestSessionId },
       create: {
@@ -735,9 +879,20 @@ export class QuizService {
       throw new BadRequestException('Add at least one question or attach bank questions.');
     }
 
-    if (dto.requiresUnlock && (dto.priceLkr == null || dto.priceLkr <= 0)) {
-      throw new BadRequestException('Set a price in LKR when the quiz requires unlock.');
+    const language = dto.language ?? ContentLanguage.en;
+    assertLocaleContent(dto.title, language, 'Quiz title', 3);
+    if (dto.description) {
+      assertLocaleContent(dto.description, language, 'Quiz description', 10);
     }
+
+    for (const question of inline) {
+      assertLocaleContent(question.questionText, language, 'Question text', 3);
+      for (const choice of question.choices ?? []) {
+        assertLocaleContent(choice.choiceText, language, 'Answer choice', 1);
+      }
+    }
+
+    await this.assertUnlockPricing(dto.requiresUnlock ?? false, dto.priceLkr);
 
     if (dto.moduleId) {
       const mod = await this.prisma.module.findFirst({
@@ -749,20 +904,26 @@ export class QuizService {
     }
 
     const createdQuizId = await this.prisma.$transaction(async (tx) => {
+      if (bankIds.length > 0) {
+        await assertQuestionsMatchLanguage(tx, bankIds, language);
+      }
+
       const quiz = await tx.quiz.create({
         data: {
           courseId: dto.courseId,
           moduleId: dto.moduleId ?? undefined,
-          title: toJson(dto.title),
-          description: dto.description ? toJson(dto.description) : undefined,
+          language,
+          title: toJson(toMonoLocalized(dto.title, language)),
+          description: dto.description
+            ? toJson(toMonoLocalized(dto.description, language))
+            : undefined,
           coverImageUrl: dto.coverImageUrl ?? undefined,
           durationMinutes: dto.durationMinutes,
           passingScorePercentage: dto.passingScorePercentage,
           maxAttempts: dto.maxAttempts ?? 1,
           shuffleQuestions: dto.shuffleQuestions ?? false,
           requiresUnlock: dto.requiresUnlock ?? false,
-          priceLkr:
-            dto.requiresUnlock && dto.priceLkr != null ? dto.priceLkr : null,
+          priceLkr: dto.priceLkr != null ? dto.priceLkr : null,
           status: dto.status ?? QuizStatus.Draft,
           createdById: userId,
         },
@@ -773,7 +934,7 @@ export class QuizService {
       for (const question of inline) {
         const created = await tx.question.create({
           data: {
-            questionText: toJson(question.questionText),
+            questionText: toJson(toMonoLocalized(question.questionText, language)),
             type: question.type,
             points: question.points ?? 1,
             status:
@@ -783,7 +944,7 @@ export class QuizService {
             createdById: userId,
             choices: {
               create: question.choices.map((choice) => ({
-                choiceText: toJson(choice.choiceText),
+                choiceText: toJson(toMonoLocalized(choice.choiceText, language)),
                 isCorrect: choice.isCorrect,
               })),
             },
@@ -800,10 +961,6 @@ export class QuizService {
       }
 
       for (const questionId of bankIds) {
-        const exists = await tx.question.findUnique({ where: { id: questionId } });
-        if (!exists) {
-          throw new BadRequestException(`Question not found: ${questionId}`);
-        }
         await tx.quizQuestion.create({
           data: {
             quizId: quiz.id,
@@ -824,6 +981,15 @@ export class QuizService {
     const existing = await this.prisma.quiz.findUnique({ where: { id } });
     if (!existing) throw new NotFoundException('Quiz not found');
 
+    const language = dto.language ?? existing.language;
+
+    if (dto.title) {
+      assertLocaleContent(dto.title, language, 'Quiz title', 3);
+    }
+    if (dto.description) {
+      assertLocaleContent(dto.description, language, 'Quiz description', 10);
+    }
+
     const nextRequires =
       dto.requiresUnlock !== undefined
         ? dto.requiresUnlock
@@ -835,9 +1001,7 @@ export class QuizService {
           ? Number(existing.priceLkr)
           : null;
 
-    if (nextRequires && (nextPrice == null || nextPrice <= 0)) {
-      throw new BadRequestException('Set a price in LKR when the quiz requires unlock.');
-    }
+    await this.assertUnlockPricing(nextRequires, nextPrice);
 
     const courseId = dto.courseId ?? existing.courseId;
     if (dto.moduleId) {
@@ -850,6 +1014,44 @@ export class QuizService {
     }
 
     await this.prisma.$transaction(async (tx) => {
+      const languageChanged =
+        dto.language !== undefined && dto.language !== existing.language;
+      const questionsChanging = dto.questionIds !== undefined;
+
+      if (languageChanged || questionsChanging) {
+        const questionIds =
+          dto.questionIds ??
+          (
+            await tx.quizQuestion.findMany({
+              where: { quizId: id },
+              orderBy: { sortOrder: 'asc' },
+              select: { questionId: true },
+            })
+          ).map((link) => link.questionId);
+
+        if (questionIds.length > 0) {
+          await assertQuestionsMatchLanguage(tx, questionIds, language);
+        }
+      }
+
+      const nextTitle = dto.title
+        ? toMonoLocalized(dto.title, language)
+        : languageChanged
+          ? toMonoLocalized(existing.title as Localized, language)
+          : undefined;
+      const nextDescription = dto.description
+        ? toMonoLocalized(dto.description, language)
+        : languageChanged && existing.description
+          ? toMonoLocalized(existing.description as Localized, language)
+          : undefined;
+
+      if (nextTitle) {
+        assertLocaleContent(nextTitle, language, 'Quiz title', 3);
+      }
+      if (nextDescription) {
+        assertLocaleContent(nextDescription, language, 'Quiz description', 10);
+      }
+
       await tx.quiz.update({
         where: { id },
         data: {
@@ -860,8 +1062,10 @@ export class QuizService {
               : dto.moduleId === null
                 ? null
                 : dto.moduleId,
-          title: dto.title ? toJson(dto.title) : undefined,
-          description: dto.description ? toJson(dto.description) : undefined,
+          language: dto.language,
+          title: nextTitle ? toJson(nextTitle) : undefined,
+          description:
+            nextDescription !== undefined ? toJson(nextDescription) : undefined,
           coverImageUrl:
             dto.coverImageUrl === undefined ? undefined : dto.coverImageUrl,
           durationMinutes: dto.durationMinutes,
@@ -883,10 +1087,6 @@ export class QuizService {
         await tx.quizQuestion.deleteMany({ where: { quizId: id } });
         for (let i = 0; i < dto.questionIds.length; i += 1) {
           const questionId = dto.questionIds[i];
-          const exists = await tx.question.findUnique({ where: { id: questionId } });
-          if (!exists) {
-            throw new BadRequestException(`Question not found: ${questionId}`);
-          }
           await tx.quizQuestion.create({
             data: { quizId: id, questionId, sortOrder: i },
           });

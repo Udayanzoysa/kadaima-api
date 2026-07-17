@@ -19,6 +19,8 @@ import { PaymentsModule } from './payments/payments.module';
 import { NotificationModule } from './notification/notification.module';
 import { SettingsModule } from './settings/settings.module';
 import { TeachersModule } from './teachers/teachers.module';
+import { AuditModule } from './audit/audit.module';
+import { SupportChatModule } from './support-chat/support-chat.module';
 import { envValidationSchema } from './config/env.validation';
 
 @Module({
@@ -48,6 +50,8 @@ import { envValidationSchema } from './config/env.validation';
     PaymentsModule,
     GradingModule,
     AnalyticsModule,
+    AuditModule,
+    SupportChatModule,
     ScheduleModule.forRoot(),
   ],
   controllers: [AppController],

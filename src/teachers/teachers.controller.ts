@@ -23,7 +23,9 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
 import { existsSync, mkdirSync } from 'fs';
 import { extname, join } from 'path';
+import { AuditAction } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { Audit } from '../audit/audit-log.decorator';
 import { UpdateTeacherInquiryDto } from './dto/teacher-inquiry.dto';
 import {
   ReorderIdsDto,
@@ -53,6 +55,7 @@ export class TeachersController {
   }
 
   @Put('profile')
+  @Audit('TEACHER_PAGE', AuditAction.UPDATE)
   @ApiOperation({ summary: 'Update my teacher public page (slug, branding, publish)' })
   updateMyProfile(@Req() req: any, @Body() dto: UpdateTeacherProfileDto) {
     return this.teachersService.updateMyProfile(req.user.id, dto);
@@ -91,6 +94,7 @@ export class TeachersController {
   }
 
   @Post('banners')
+  @Audit('TEACHER_PAGE', AuditAction.CREATE)
   @ApiOperation({ summary: 'Add a landing carousel banner' })
   addBanner(@Req() req: any, @Body() dto: UpsertTeacherBannerDto) {
     return this.teachersService.addBanner(req.user.id, dto);
@@ -103,6 +107,7 @@ export class TeachersController {
   }
 
   @Put('banners/:id')
+  @Audit('TEACHER_PAGE', AuditAction.UPDATE)
   updateBanner(
     @Req() req: any,
     @Param('id') id: string,
@@ -112,11 +117,13 @@ export class TeachersController {
   }
 
   @Delete('banners/:id')
+  @Audit('TEACHER_PAGE', AuditAction.DELETE)
   deleteBanner(@Req() req: any, @Param('id') id: string) {
     return this.teachersService.deleteBanner(req.user.id, id);
   }
 
   @Post('classes')
+  @Audit('TEACHER_PAGE', AuditAction.CREATE)
   @ApiOperation({ summary: 'Add a class card on the landing page' })
   addClass(@Req() req: any, @Body() dto: UpsertTeacherClassDto) {
     return this.teachersService.addClass(req.user.id, dto);
@@ -129,6 +136,7 @@ export class TeachersController {
   }
 
   @Put('classes/:id')
+  @Audit('TEACHER_PAGE', AuditAction.UPDATE)
   updateClass(
     @Req() req: any,
     @Param('id') id: string,
@@ -138,11 +146,13 @@ export class TeachersController {
   }
 
   @Delete('classes/:id')
+  @Audit('TEACHER_PAGE', AuditAction.DELETE)
   deleteClass(@Req() req: any, @Param('id') id: string) {
     return this.teachersService.deleteClass(req.user.id, id);
   }
 
   @Post('posters')
+  @Audit('TEACHER_PAGE', AuditAction.CREATE)
   @ApiOperation({ summary: 'Add a dynamic poster banner (top / middle / footer)' })
   addPoster(@Req() req: any, @Body() dto: UpsertTeacherPosterDto) {
     return this.teachersService.addPoster(req.user.id, dto);
@@ -155,6 +165,7 @@ export class TeachersController {
   }
 
   @Put('posters/:id')
+  @Audit('TEACHER_PAGE', AuditAction.UPDATE)
   updatePoster(
     @Req() req: any,
     @Param('id') id: string,
@@ -164,6 +175,7 @@ export class TeachersController {
   }
 
   @Delete('posters/:id')
+  @Audit('TEACHER_PAGE', AuditAction.DELETE)
   deletePoster(@Req() req: any, @Param('id') id: string) {
     return this.teachersService.deletePoster(req.user.id, id);
   }

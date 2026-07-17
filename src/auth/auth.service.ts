@@ -34,8 +34,16 @@ import {
   WelcomeAccountType,
 } from '../notification/events/welcome.event';
 import { assertValidSlug, slugFromName } from '../teachers/slug.util';
+import { AuditAction } from '@prisma/client';
+import { AuditService } from '../audit/audit.service';
 
 const DEFAULT_WORKSPACE_NAME = 'Techwing LMS';
+
+/** IP / user-agent forwarded from the controller for auth event logging. */
+export interface AuthRequestMeta {
+  ip?: string | null;
+  userAgent?: string | null;
+}
 
 @Injectable()
 export class AuthService {
@@ -46,10 +54,38 @@ export class AuthService {
     private jwtService: JwtService,
     private eventEmitter: EventEmitter2,
     private config: ConfigService,
+    private auditService: AuditService,
   ) {
     this.googleClient = new OAuth2Client(
       this.config.get<string>('GOOGLE_CLIENT_ID'),
     );
+  }
+
+  private logAuthEvent(
+    action: AuditAction,
+    user: { id: string; email: string; name?: string | null; role: string },
+    meta?: AuthRequestMeta,
+    description?: string,
+  ) {
+    void this.auditService.log({
+      action,
+      subject: 'AUTH',
+      description,
+      actor: { id: user.id, email: user.email, name: user.name, role: user.role },
+      ip: meta?.ip,
+      userAgent: meta?.userAgent,
+    });
+  }
+
+  private logLoginFailed(email: string, meta?: AuthRequestMeta, reason?: string) {
+    void this.auditService.log({
+      action: AuditAction.LOGIN_FAILED,
+      subject: 'AUTH',
+      description: reason ? `Login failed: ${reason}` : 'Login failed',
+      actor: { email },
+      ip: meta?.ip,
+      userAgent: meta?.userAgent,
+    });
   }
 
   private emitWelcomeEmail(input: {
@@ -351,7 +387,7 @@ export class AuthService {
   }
 
   /** Student signup — joins default workspace with no admin permissions. */
-  async registerStudent(dto: RegisterAccountDto) {
+  async registerStudent(dto: RegisterAccountDto, meta?: AuthRequestMeta) {
     await this.assertEmailAvailable(dto.email);
     const workspace = await this.getDefaultWorkspace();
     const passwordHash = await this.hashPassword(dto.password);
@@ -379,6 +415,7 @@ export class AuthService {
       userName: user.name,
       accountType: 'student',
     });
+    this.logAuthEvent(AuditAction.SIGNUP, user, meta, 'Student registered');
 
     return {
       userId: user.id,
@@ -389,7 +426,7 @@ export class AuthService {
   }
 
   /** Teacher signup — joins default workspace with Quizzes + Questions access. */
-  async registerTeacher(dto: RegisterAccountDto) {
+  async registerTeacher(dto: RegisterAccountDto, meta?: AuthRequestMeta) {
     await this.assertEmailAvailable(dto.email);
     const workspace = await this.getDefaultWorkspace();
     const teacherRole = await this.ensureTeacherRole(workspace.id);
@@ -441,6 +478,7 @@ export class AuthService {
       userName: user.name,
       accountType: 'teacher',
     });
+    this.logAuthEvent(AuditAction.SIGNUP, user, meta, 'Teacher registered');
 
     return {
       userId: user.id,
@@ -452,7 +490,7 @@ export class AuthService {
   }
 
   // 1. Unified Multi-Tenant Registration
-  async register(dto: RegisterDto) {
+  async register(dto: RegisterDto, meta?: AuthRequestMeta) {
     await this.assertEmailAvailable(dto.email);
 
     const salt = await bcrypt.genSalt(10);
@@ -622,6 +660,12 @@ export class AuthService {
         userName: result.name,
         accountType: 'admin',
       });
+      this.logAuthEvent(
+        AuditAction.SIGNUP,
+        { id: result.userId, email: result.email, name: result.name, role: Role.CUSTOMER_ADMIN },
+        meta,
+        'Workspace admin registered',
+      );
       return {
         userId: result.userId,
         workspaceId: result.workspaceId,
@@ -631,29 +675,36 @@ export class AuthService {
   }
 
   // 2. Primary Login & Step-Up Authentication Routing Matrix
-  async login(dto: LoginDto) {
+  async login(dto: LoginDto, meta?: AuthRequestMeta) {
     const user = await this.prisma.user.findUnique({
       where: { email: dto.email },
       include: { workspace: true },
     });
 
-    if (!user) throw new UnauthorizedException('Invalid login credentials.');
+    if (!user) {
+      this.logLoginFailed(dto.email, meta, 'unknown email');
+      throw new UnauthorizedException('Invalid login credentials.');
+    }
 
     if (user.status === 'Inactive') {
+      this.logLoginFailed(dto.email, meta, 'account deactivated');
       throw new UnauthorizedException('Your account is deactivated. Please contact support.');
     }
 
     await this.assertTeacherLoginAllowed(user.id);
 
     if (!user.passwordHash) {
+      this.logLoginFailed(dto.email, meta, 'Google-only account');
       throw new UnauthorizedException(
         'This account uses Google sign-in. Continue with Google instead.',
       );
     }
 
     const isPasswordValid = await bcrypt.compare(dto.password, user.passwordHash);
-    if (!isPasswordValid)
+    if (!isPasswordValid) {
+      this.logLoginFailed(dto.email, meta, 'invalid password');
       throw new UnauthorizedException('Invalid login credentials.');
+    }
 
     // If 2FA is active, yield a temporary pre-auth token valid for 5 minutes max
     if (user.isTwoFactorEnabled) {
@@ -667,6 +718,7 @@ export class AuthService {
     }
 
     // 2FA disabled: generate absolute session keys directly
+    this.logAuthEvent(AuditAction.LOGIN, user, meta);
     return this.generateSessionTokens(user);
   }
 
@@ -674,7 +726,7 @@ export class AuthService {
    * Google Sign-In: verify GIS ID token, find or create user, return JWT
    * (same shape as email/password login).
    */
-  async loginWithGoogle(dto: GoogleAuthDto) {
+  async loginWithGoogle(dto: GoogleAuthDto, meta?: AuthRequestMeta) {
     const clientId = this.config.get<string>('GOOGLE_CLIENT_ID')?.trim();
     if (!clientId) {
       throw new BadRequestException(
@@ -794,6 +846,7 @@ export class AuthService {
       };
     }
 
+    this.logAuthEvent(AuditAction.LOGIN, user, meta, 'Google sign-in');
     return this.generateSessionTokens(user);
   }
 
@@ -960,7 +1013,7 @@ export class AuthService {
   }
 
   // 3. Second-Factor Verification Resolver
-  async verifyTwoFactor(userId: string, token: string) {
+  async verifyTwoFactor(userId: string, token: string, meta?: AuthRequestMeta) {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user || !user.twoFactorSecret)
       throw new BadRequestException('MFA profile uninitialized.');
@@ -977,9 +1030,12 @@ export class AuthService {
       token,
       secret: user.twoFactorSecret,
     });
-    if (!isValid)
+    if (!isValid) {
+      this.logLoginFailed(user.email, meta, 'invalid 2FA token');
       throw new UnauthorizedException('Invalid authorization token profile.');
+    }
 
+    this.logAuthEvent(AuditAction.LOGIN, user, meta, '2FA verified');
     return this.generateSessionTokens(user);
   }
 
@@ -989,6 +1045,7 @@ export class AuthService {
       sub: user.id,
       email: user.email,
       role: user.role,
+      team: user.team,
       workspaceId: user.workspaceId,
     };
     return {
@@ -1024,5 +1081,79 @@ export class AuthService {
       team: user.team,
       role: user.role,
     };
+  }
+
+  /** Self-service profile update — name / phone / school only. */
+  async updateProfile(
+    userId: string,
+    dto: { name?: string; phoneNumber?: string; school?: string },
+  ) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user || user.status === 'Inactive') {
+      throw new UnauthorizedException('Valid authorization session required.');
+    }
+
+    const trimmedName = dto.name?.trim();
+    const updated = await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        name: trimmedName || undefined,
+        firstName: trimmedName ? trimmedName.split(' ')[0] : undefined,
+        lastName: trimmedName
+          ? trimmedName.split(' ').slice(1).join(' ') || null
+          : undefined,
+        phoneNumber:
+          dto.phoneNumber === undefined
+            ? undefined
+            : dto.phoneNumber.trim() || null,
+        company:
+          dto.school === undefined ? undefined : dto.school.trim() || null,
+      },
+    });
+
+    return {
+      id: updated.id,
+      email: updated.email,
+      name:
+        updated.name ||
+        [updated.firstName, updated.lastName].filter(Boolean).join(' ') ||
+        updated.email,
+      phoneNumber: updated.phoneNumber,
+      school: updated.company,
+      team: updated.team,
+      role: updated.role,
+    };
+  }
+
+  /** Self-service password change (requires current password on file). */
+  async changePassword(
+    userId: string,
+    dto: { currentPassword: string; newPassword: string },
+  ) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user || user.status === 'Inactive') {
+      throw new UnauthorizedException('Valid authorization session required.');
+    }
+    if (!user.passwordHash) {
+      throw new BadRequestException(
+        'This account signed in with Google and has no password set yet. Use "Forgot password" to set one.',
+      );
+    }
+
+    const isValid = await bcrypt.compare(
+      dto.currentPassword,
+      user.passwordHash,
+    );
+    if (!isValid) {
+      throw new UnauthorizedException('Current password is incorrect.');
+    }
+
+    const passwordHash = await this.hashPassword(dto.newPassword);
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { passwordHash },
+    });
+
+    return { ok: true };
   }
 }

@@ -1,6 +1,6 @@
-import { Controller, Get, Post, Body, UseGuards, Req } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Body, UseGuards, Req } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
-import { AuthService } from './auth.service';
+import { AuthService, AuthRequestMeta } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
 import { RegisterAccountDto } from './dto/register-account.dto';
 import { LoginDto } from './dto/login.dto';
@@ -9,6 +9,8 @@ import { Verify2FaDto } from './dto/verify-2fa.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { ValidateResetTokenDto } from './dto/validate-reset-token.dto';
+import { UpdateProfileDto } from './dto/update-profile.dto';
+import { ChangePasswordDto } from './dto/change-password.dto';
 import {
   ApiTags,
   ApiOperation,
@@ -23,6 +25,15 @@ import { JwtAuthGuard } from './guards/jwt-auth.guard';
 export class AuthController {
   constructor(private authService: AuthService) {}
 
+  private requestMeta(req: any): AuthRequestMeta {
+    const forwarded = req.headers?.['x-forwarded-for'];
+    const ip =
+      typeof forwarded === 'string' && forwarded.length > 0
+        ? forwarded.split(',')[0].trim()
+        : req.ip ?? req.socket?.remoteAddress ?? null;
+    return { ip, userAgent: req.headers?.['user-agent'] ?? null };
+  }
+
   @Post('register')
   @ApiOperation({
     summary: 'Onboards a new Tenant Workspace alongside its Admin Account',
@@ -32,20 +43,20 @@ export class AuthController {
     description:
       'Workspace and master database profile generated successfully.',
   })
-  async register(@Body() dto: RegisterDto) {
-    return this.authService.register(dto);
+  async register(@Body() dto: RegisterDto, @Req() req: any) {
+    return this.authService.register(dto, this.requestMeta(req));
   }
 
   @Post('register/student')
   @ApiOperation({ summary: 'Register a student account in the default LMS workspace' })
-  registerStudent(@Body() dto: RegisterAccountDto) {
-    return this.authService.registerStudent(dto);
+  registerStudent(@Body() dto: RegisterAccountDto, @Req() req: any) {
+    return this.authService.registerStudent(dto, this.requestMeta(req));
   }
 
   @Post('register/teacher')
   @ApiOperation({ summary: 'Register a teacher account with quiz management access' })
-  registerTeacher(@Body() dto: RegisterAccountDto) {
-    return this.authService.registerTeacher(dto);
+  registerTeacher(@Body() dto: RegisterAccountDto, @Req() req: any) {
+    return this.authService.registerTeacher(dto, this.requestMeta(req));
   }
 
   @Post('login')
@@ -55,8 +66,8 @@ export class AuthController {
     description:
       'Returns either system API session payload or steps into 2FA challenge mode.',
   })
-  async login(@Body() dto: LoginDto) {
-    return this.authService.login(dto);
+  async login(@Body() dto: LoginDto, @Req() req: any) {
+    return this.authService.login(dto, this.requestMeta(req));
   }
 
   @Post('google')
@@ -68,8 +79,8 @@ export class AuthController {
     status: 200,
     description: 'Returns accessToken, or requires2FA like email login.',
   })
-  loginWithGoogle(@Body() dto: GoogleAuthDto) {
-    return this.authService.loginWithGoogle(dto);
+  loginWithGoogle(@Body() dto: GoogleAuthDto, @Req() req: any) {
+    return this.authService.loginWithGoogle(dto, this.requestMeta(req));
   }
 
   @Post('forgot-password')
@@ -108,7 +119,7 @@ export class AuthController {
     summary: 'Submits the 6-digit TOTP token to clear pending 2FA challenges',
   })
   async verify2Fa(@Req() req: any, @Body() dto: Verify2FaDto) {
-    return this.authService.verifyTwoFactor(req.user.sub, dto.token);
+    return this.authService.verifyTwoFactor(req.user.sub, dto.token, this.requestMeta(req));
   }
 
   @Get('me')
@@ -117,5 +128,21 @@ export class AuthController {
   @ApiOperation({ summary: 'Validate session and return the current user profile' })
   getMe(@Req() req: any) {
     return this.authService.getMe(req.user.id);
+  }
+
+  @Patch('me')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Update the current user profile (name / phone / school)' })
+  updateMe(@Req() req: any, @Body() dto: UpdateProfileDto) {
+    return this.authService.updateProfile(req.user.id, dto);
+  }
+
+  @Post('change-password')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Change the current user password (requires current password)' })
+  changePassword(@Req() req: any, @Body() dto: ChangePasswordDto) {
+    return this.authService.changePassword(req.user.id, dto);
   }
 }

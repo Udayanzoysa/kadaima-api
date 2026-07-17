@@ -30,7 +30,8 @@ import { CreateQuizDto } from './dto/create-quiz.dto';
 import { UpdateQuizDto, UpdateQuizStatusDto } from './dto/update-quiz.dto';
 import { HeartbeatDto } from './dto/heartbeat.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-import { QuizStatus } from '@prisma/client';
+import { AuditAction, QuizStatus } from '@prisma/client';
+import { Audit } from '../audit/audit-log.decorator';
 
 const quizUploadDir = join(process.cwd(), 'uploads', 'quizzes');
 if (!existsSync(quizUploadDir)) {
@@ -51,6 +52,7 @@ export class QuizController {
   }
 
   @Post('courses')
+  @Audit('COURSES', AuditAction.CREATE)
   @ApiOperation({ summary: 'Create a new course' })
   createCourse(@Body('title') title: string) {
     return this.quizService.createCourse(title);
@@ -117,6 +119,7 @@ export class QuizController {
   }
 
   @Post()
+  @Audit('QUIZZES', AuditAction.CREATE)
   @ApiOperation({ summary: 'Create a multi-lingual quiz with questions' })
   createQuiz(@Body() dto: CreateQuizDto, @Req() req: any) {
     return this.quizService.createQuiz(dto, req.user.id);
@@ -141,18 +144,21 @@ export class QuizController {
   }
 
   @Put(':id')
+  @Audit('QUIZZES', AuditAction.UPDATE)
   @ApiOperation({ summary: 'Update quiz details and attached questions' })
   updateQuiz(@Param('id') id: string, @Body() dto: UpdateQuizDto) {
     return this.quizService.updateQuiz(id, dto);
   }
 
   @Patch(':id/status')
+  @Audit('QUIZZES', AuditAction.CHANGE_STATUS)
   @ApiOperation({ summary: 'Update quiz status (Draft / Published / Archived)' })
   updateStatus(@Param('id') id: string, @Body() dto: UpdateQuizStatusDto) {
     return this.quizService.updateQuizStatus(id, dto.status);
   }
 
   @Delete(':id')
+  @Audit('QUIZZES', AuditAction.DELETE)
   @ApiOperation({ summary: 'Delete quiz (archives if attempts exist)' })
   deleteQuiz(@Param('id') id: string) {
     return this.quizService.deleteQuiz(id);

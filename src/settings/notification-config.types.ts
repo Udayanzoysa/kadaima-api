@@ -47,3 +47,47 @@ export function smtpSecureFlag(encryption: SmtpEncryption, port: number): boolea
   // Fallback: conventional port mapping
   return port === 465;
 }
+
+/**
+ * Platform payment mode for locked quizzes:
+ * - MIXED: monthly sub unlocks locked quizzes with no price; priced quizzes need a separate pay
+ * - MONTHLY_ONLY: monthly sub unlocks every locked quiz (quiz prices ignored for access)
+ * - QUIZ_ONLY: each locked quiz is paid individually (no monthly subscription)
+ */
+export type PaymentMode = 'MIXED' | 'MONTHLY_ONLY' | 'QUIZ_ONLY';
+
+export interface BillingConfig {
+  monthlyStudentFeeLkr: number;
+  paymentMode: PaymentMode;
+}
+
+export const DEFAULT_BILLING_CONFIG: BillingConfig = {
+  monthlyStudentFeeLkr: 500,
+  paymentMode: 'MIXED',
+};
+
+const PAYMENT_MODES: PaymentMode[] = ['MIXED', 'MONTHLY_ONLY', 'QUIZ_ONLY'];
+
+export function mergeBilling(raw: unknown): BillingConfig {
+  const obj =
+    raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  const fee = Number(obj.monthlyStudentFeeLkr);
+  const modeRaw = String(obj.paymentMode ?? '').toUpperCase();
+  const paymentMode = PAYMENT_MODES.includes(modeRaw as PaymentMode)
+    ? (modeRaw as PaymentMode)
+    : DEFAULT_BILLING_CONFIG.paymentMode;
+  return {
+    monthlyStudentFeeLkr:
+      Number.isFinite(fee) && fee >= 0
+        ? fee
+        : DEFAULT_BILLING_CONFIG.monthlyStudentFeeLkr,
+    paymentMode,
+  };
+}
+
+/** Locked quiz with a positive price is a "special" pay-per-quiz item. */
+export function isSpecialPricedQuiz(priceLkr: number | string | null | undefined) {
+  if (priceLkr == null) return false;
+  const n = Number(priceLkr);
+  return Number.isFinite(n) && n > 0;
+}

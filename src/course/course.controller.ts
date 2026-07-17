@@ -16,8 +16,9 @@ import {
   ApiQuery,
   ApiTags,
 } from '@nestjs/swagger';
-import { CourseStatus } from '@prisma/client';
+import { AuditAction, CourseStatus } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { Audit } from '../audit/audit-log.decorator';
 import { CourseService } from './course.service';
 import {
   CreateCourseDto,
@@ -43,6 +44,7 @@ export class CourseController {
   }
 
   @Post()
+  @Audit('COURSES', AuditAction.CREATE)
   @ApiOperation({ summary: 'Create a multi-lingual course' })
   createCourse(@Body() dto: CreateCourseDto) {
     return this.courseService.createCourse(dto);
@@ -55,18 +57,21 @@ export class CourseController {
   }
 
   @Put(':id')
+  @Audit('COURSES', AuditAction.UPDATE)
   @ApiOperation({ summary: 'Update course details' })
   updateCourse(@Param('id') id: string, @Body() dto: UpdateCourseDto) {
     return this.courseService.updateCourse(id, dto);
   }
 
   @Patch(':id/status')
+  @Audit('COURSES', AuditAction.CHANGE_STATUS)
   @ApiOperation({ summary: 'Update course status (Draft / Published / Archived)' })
   updateCourseStatus(@Param('id') id: string, @Body() dto: UpdateCourseStatusDto) {
     return this.courseService.updateCourseStatus(id, dto.status);
   }
 
   @Delete(':id')
+  @Audit('COURSES', AuditAction.DELETE)
   @ApiOperation({ summary: 'Delete course (archives if quizzes exist)' })
   deleteCourse(@Param('id') id: string) {
     return this.courseService.deleteCourse(id);
@@ -83,6 +88,7 @@ export class CourseController {
   }
 
   @Post(':courseId/modules')
+  @Audit('COURSES', AuditAction.CREATE)
   @ApiOperation({ summary: 'Create a module under a course' })
   createModule(
     @Param('courseId') courseId: string,
@@ -101,6 +107,7 @@ export class CourseController {
   }
 
   @Put(':courseId/modules/:id')
+  @Audit('COURSES', AuditAction.UPDATE)
   @ApiOperation({ summary: 'Update module details' })
   updateModule(
     @Param('courseId') courseId: string,
@@ -111,6 +118,7 @@ export class CourseController {
   }
 
   @Patch(':courseId/modules/:id/status')
+  @Audit('COURSES', AuditAction.CHANGE_STATUS)
   @ApiOperation({ summary: 'Update module status (Draft / Published / Archived)' })
   updateModuleStatus(
     @Param('courseId') courseId: string,
@@ -121,6 +129,7 @@ export class CourseController {
   }
 
   @Delete(':courseId/modules/:id')
+  @Audit('COURSES', AuditAction.DELETE)
   @ApiOperation({ summary: 'Delete a module' })
   deleteModule(
     @Param('courseId') courseId: string,

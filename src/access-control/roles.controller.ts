@@ -17,11 +17,13 @@ import {
   ApiResponse,
   ApiQuery,
 } from '@nestjs/swagger';
+import { AuditAction } from '@prisma/client';
 import { AccessControlService } from './access-control.service';
 import { CreateRoleDto } from './dto/create-role.dto';
 import { UpdateRoleDto } from './dto/update-role.dto';
 import { AssignRoleDto } from './dto/assign-role.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { Audit } from '../audit/audit-log.decorator';
 
 @ApiTags('Roles & Permissions')
 @ApiBearerAuth()
@@ -77,6 +79,7 @@ export class RolesController {
   }
 
   @Post()
+  @Audit('ROLES', AuditAction.CREATE)
   @ApiOperation({
     summary: 'Creates a custom role definition in the workspace',
   })
@@ -92,6 +95,7 @@ export class RolesController {
   }
 
   @Patch(':id')
+  @Audit('ROLES', AuditAction.UPDATE)
   @ApiOperation({ summary: 'Updates a custom role definition' })
   async updateRole(
     @Req() req: any,
@@ -102,6 +106,7 @@ export class RolesController {
   }
 
   @Delete(':id')
+  @Audit('ROLES', AuditAction.DELETE)
   @ApiOperation({ summary: 'Deletes a custom role from the workspace' })
   async deleteRole(@Req() req: any, @Param('id') id: string) {
     return this.accessControlService.deleteRole(req.user.workspaceId, id);
@@ -125,6 +130,7 @@ export class RolesController {
   }
 
   @Post(':id/assign')
+  @Audit('ROLES', AuditAction.UPDATE)
   @ApiOperation({ summary: 'Assigns users in the workspace to a role' })
   async assignRole(
     @Req() req: any,
