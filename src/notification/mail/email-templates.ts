@@ -53,9 +53,7 @@ export function buildPasswordResetEmail(options: {
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#eef3fb;padding:40px 16px;">
     <tr>
       <td align="center">
-        <div style="font-size:22px;font-weight:700;color:#1d4ed8;margin-bottom:20px;letter-spacing:0.01em;">
-          Kadaima <span style="font-weight:500;color:#64748b;font-size:16px;">(කඩඉම)</span>
-        </div>
+        ${brandLogoHeader(base)}
 
         <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 8px 30px rgba(37,99,235,0.08);border:1px solid #dbeafe;">
           <tr>
@@ -139,11 +137,20 @@ export interface WelcomeEmailContent {
   html: string;
 }
 
+function brandLogoHeader(frontendUrl: string): string {
+  const base = frontendUrl.replace(/\/$/, '');
+  const logoUrl = `${base}/brand/kadaima-logo.png`;
+  return `<div style="margin-bottom:20px;">
+          <img src="${escapeHtml(logoUrl)}" alt="Kadaima" width="180" height="54" style="display:block;margin:0 auto;height:54px;width:auto;max-width:220px;" />
+        </div>`;
+}
+
 function wrapKadaimaEmail(options: {
   subject: string;
   title: string;
   displayName: string;
   bodyHtml: string;
+  frontendUrl: string;
   ctaUrl?: string;
   ctaLabel?: string;
   footerNoteHtml: string;
@@ -173,9 +180,7 @@ function wrapKadaimaEmail(options: {
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#eef3fb;padding:40px 16px;">
     <tr>
       <td align="center">
-        <div style="font-size:22px;font-weight:700;color:#1d4ed8;margin-bottom:20px;letter-spacing:0.01em;">
-          Kadaima <span style="font-weight:500;color:#64748b;font-size:16px;">(කඩඉම)</span>
-        </div>
+        ${brandLogoHeader(options.frontendUrl)}
         <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 8px 30px rgba(37,99,235,0.08);border:1px solid #dbeafe;">
           <tr>
             <td style="padding:36px 32px 28px;">
@@ -239,6 +244,7 @@ export function buildWelcomeEmail(options: {
       subject,
       title: 'Thank you for registering',
       displayName,
+      frontendUrl: base,
       bodyHtml: `
               <p style="margin:0 0 14px;font-size:15px;line-height:1.6;color:#475569;">
                 Thank you for registering with <strong>Kadaima Educational</strong> as a teacher.
@@ -284,6 +290,7 @@ export function buildWelcomeEmail(options: {
     subject,
     title: 'Welcome aboard',
     displayName,
+    frontendUrl: base,
     bodyHtml: `
               <p style="margin:0 0 14px;font-size:15px;line-height:1.6;color:#475569;">
                 Your <strong>${escapeHtml(roleLabel)}</strong> account on Kadaima Educational is ready.
@@ -339,6 +346,7 @@ export function buildTeacherActivatedEmail(options: {
     subject,
     title: 'Your profile is active',
     displayName,
+    frontendUrl: base,
     bodyHtml: `
               <p style="margin:0 0 14px;font-size:15px;line-height:1.6;color:#475569;">
                 Great news! Your teacher profile on <strong>Kadaima Educational</strong> has been
