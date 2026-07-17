@@ -201,9 +201,19 @@ export class PaymentsService {
         'PayHere is not configured. Set PAYHERE_MERCHANT_ID and PAYHERE_MERCHANT_SECRET.',
       );
     }
+
+    const placeholder =
+      /your_sandbox|your_merchant|changeme|example|xxx/i.test(merchantId) ||
+      /your_sandbox|your_merchant|changeme|example|xxx/i.test(merchantSecret);
+    if (placeholder) {
+      throw new BadRequestException(
+        'PayHere still has placeholder credentials. Create a sandbox merchant at https://sandbox.payhere.lk, add domain "localhost", then set real PAYHERE_MERCHANT_ID and PAYHERE_MERCHANT_SECRET in .env.',
+      );
+    }
+
     if (!notifyUrl) {
       throw new BadRequestException(
-        'PayHere notify URL is not configured. Set PAYHERE_NOTIFY_URL to a publicly reachable URL.',
+        'PayHere notify URL is not configured. Set PAYHERE_NOTIFY_URL to a publicly reachable URL (use ngrok locally, or call /public/payments/payhere/sandbox-complete after checkout).',
       );
     }
 
@@ -484,18 +494,29 @@ export class PaymentsService {
     return { ok: true, status: failedStatus };
   }
 
-  async completeSandboxPayment(orderId: string, guestSessionId: string) {
+  async completeSandboxPayment(params: {
+    orderId: string;
+    userId?: string;
+    guestSessionId?: string;
+  }) {
     const mode = (process.env.PAYHERE_MODE || 'sandbox').toLowerCase();
     if (mode === 'live') {
       throw new BadRequestException('Sandbox complete is disabled in live mode.');
     }
 
     const order = await this.prisma.paymentOrder.findUnique({
-      where: { orderId },
+      where: { orderId: params.orderId },
     });
     if (!order) throw new NotFoundException('Payment order not found');
-    if (order.guestSessionId !== guestSessionId) {
-      throw new BadRequestException('Guest session does not match this order.');
+
+    const ownsByUser = Boolean(params.userId && order.userId === params.userId);
+    const ownsByGuest = Boolean(
+      params.guestSessionId && order.guestSessionId === params.guestSessionId,
+    );
+    if (!ownsByUser && !ownsByGuest) {
+      throw new BadRequestException(
+        'You do not own this payment order. Pass the logged-in user token (and matching order), or the same guestSessionId used at checkout.',
+      );
     }
 
     if (order.status === PaymentOrderStatus.Paid) {

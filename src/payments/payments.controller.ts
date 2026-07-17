@@ -48,11 +48,15 @@ class SandboxCompleteDto {
   @MaxLength(64)
   orderId: string;
 
-  @ApiProperty()
+  @ApiProperty({
+    required: false,
+    description: 'Required only for guest checkout orders (logged-in users are matched via JWT)',
+  })
+  @IsOptional()
   @IsString()
   @MinLength(8)
   @MaxLength(64)
-  guestSessionId: string;
+  guestSessionId?: string;
 }
 
 class PublicSlipFieldsDto {
@@ -141,12 +145,16 @@ export class PaymentsController {
   @Post('public/payments/payhere/sandbox-complete')
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard)
-  @ApiOperation({ summary: 'Mark PayHere sandbox payment complete (localhost helper)' })
-  sandboxComplete(@Body() dto: SandboxCompleteDto) {
-    return this.paymentsService.completeSandboxPayment(
-      dto.orderId,
-      dto.guestSessionId,
-    );
+  @ApiOperation({
+    summary:
+      'Mark PayHere sandbox payment complete (localhost helper when notify_url cannot reach your machine)',
+  })
+  sandboxComplete(@Body() dto: SandboxCompleteDto, @Req() req: any) {
+    return this.paymentsService.completeSandboxPayment({
+      orderId: dto.orderId,
+      guestSessionId: dto.guestSessionId,
+      userId: req.user?.id,
+    });
   }
 
   @Post('public/payments/voucher/redeem')
