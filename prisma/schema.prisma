@@ -47,6 +47,13 @@ enum TeacherQuizVisibility {
   SELECTED
 }
 
+/// Admin review before a teacher can publish their public page.
+enum TeacherReviewStatus {
+  Pending
+  Active
+  Rejected
+}
+
 enum TeacherPosterPlacement {
   TOP
   MIDDLE
@@ -131,7 +138,10 @@ model Permission {
 model User {
   id                 String    @id @default(uuid()) @db.Uuid
   email              String    @unique
-  passwordHash       String
+  /// Null for Google-only accounts (no local password).
+  passwordHash       String?
+  /// Google subject (`sub`) when signed in with Google.
+  googleId           String?   @unique
   role               Role      @default(USER)
   isTwoFactorEnabled Boolean   @default(false)
   twoFactorSecret    String?
@@ -174,6 +184,12 @@ model User {
   teacherProfile     TeacherProfile?
 
   @@index([workspaceId])
+  @@index([workspaceId, status])
+  @@index([status])
+  @@index([team])
+  @@index([customRoleId])
+  @@index([createdAt])
+  @@index([invitedById])
 }
 
 /// Public branded landing for a teacher (shared DB, user-scoped — not a new workspace).
@@ -194,6 +210,8 @@ model TeacherProfile {
   contactAddress String?                @map("contact_address") @db.Text
   sideBannerUrl  String?                @map("side_banner_url")
   isPublic       Boolean                @default(false) @map("is_public")
+  /// Pending until an admin activates the teacher on the Users page.
+  reviewStatus   TeacherReviewStatus    @default(Active) @map("review_status")
   quizVisibility TeacherQuizVisibility  @default(ALL) @map("quiz_visibility")
   /// Page-builder layout: section visibility + order for /t/{slug}
   pageLayout     Json?                  @map("page_layout")
@@ -206,6 +224,7 @@ model TeacherProfile {
   inquiries       TeacherContactInquiry[]
 
   @@index([slug])
+  @@index([reviewStatus])
   @@map("teacher_profiles")
 }
 
@@ -397,12 +416,15 @@ model AccessReview {
   role         CustomRole  @relation(fields: [roleId], references: [id], onDelete: Cascade)
 
   reviewerId   String      @db.Uuid
-  reviewer     User        @relation("ReviewerUser", fields: [reviewerId], references: [id])
+  reviewer     User        @relation("ReviewerUser", fields: [reviewerId], references: [id], onDelete: Cascade)
 
   status       String
   notes        String?
 
   reviewedAt   DateTime    @default(now())
+
+  @@index([workspaceId])
+  @@index([reviewerId])
 }
 
 model Course {
@@ -451,7 +473,7 @@ model Quiz {
   priceLkr               Decimal?       @map("price_lkr") @db.Decimal(12, 2)
   status                 QuizStatus     @default(Draft)
   createdById            String         @map("created_by") @db.Uuid
-  createdBy              User           @relation("QuizCreator", fields: [createdById], references: [id])
+  createdBy              User           @relation("QuizCreator", fields: [createdById], references: [id], onDelete: Restrict)
   createdAt              DateTime       @default(now()) @map("created_at")
   updatedAt              DateTime       @updatedAt @map("updated_at")
   quizQuestions          QuizQuestion[]
@@ -465,6 +487,7 @@ model Quiz {
   @@index([courseId])
   @@index([moduleId])
   @@index([createdById])
+  @@index([status])
   @@map("quizzes")
 }
 
@@ -562,7 +585,7 @@ model Question {
   imageUrl     String?        @map("image_url")
   config       Json?
   createdById  String?        @map("created_by") @db.Uuid
-  createdBy    User?          @relation("QuestionCreator", fields: [createdById], references: [id])
+  createdBy    User?          @relation("QuestionCreator", fields: [createdById], references: [id], onDelete: SetNull)
   createdAt    DateTime       @default(now()) @map("created_at")
   updatedAt    DateTime       @updatedAt @map("updated_at")
   choices      AnswerChoice[]
@@ -621,7 +644,7 @@ model QuizAttempt {
   quizId           String        @map("quiz_id") @db.Uuid
   quiz             Quiz          @relation(fields: [quizId], references: [id], onDelete: Cascade)
   studentId        String?       @map("student_id") @db.Uuid
-  student          User?         @relation("StudentAttempts", fields: [studentId], references: [id])
+  student          User?         @relation("StudentAttempts", fields: [studentId], references: [id], onDelete: SetNull)
   guestLeadId      String?       @map("guest_lead_id") @db.Uuid
   guestLead        GuestLead?    @relation(fields: [guestLeadId], references: [id], onDelete: Cascade)
   resultToken      String?       @unique @map("result_token")

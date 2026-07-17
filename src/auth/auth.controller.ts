@@ -4,6 +4,7 @@ import { AuthService } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
 import { RegisterAccountDto } from './dto/register-account.dto';
 import { LoginDto } from './dto/login.dto';
+import { GoogleAuthDto } from './dto/google-auth.dto';
 import { Verify2FaDto } from './dto/verify-2fa.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
@@ -56,6 +57,19 @@ export class AuthController {
   })
   async login(@Body() dto: LoginDto) {
     return this.authService.login(dto);
+  }
+
+  @Post('google')
+  @Throttle({ default: { limit: 20, ttl: 900_000 } })
+  @ApiOperation({
+    summary: 'Sign in or register with a Google ID token (GIS)',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Returns accessToken, or requires2FA like email login.',
+  })
+  loginWithGoogle(@Body() dto: GoogleAuthDto) {
+    return this.authService.loginWithGoogle(dto);
   }
 
   @Post('forgot-password')

@@ -5,16 +5,28 @@ import {
   ForbiddenException,
   BadRequestException,
 } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+import {
+  TEACHER_ACTIVATED_EVENT,
+  TeacherActivatedEvent,
+} from '../notification/events/teacher-activated.event';
+import {
+  USER_WELCOME_EVENT,
+  UserWelcomeEvent,
+} from '../notification/events/welcome.event';
 import * as bcrypt from 'bcrypt';
 import { authenticator } from 'otplib';
 import { validateAndCleanSriLankanNumber } from '../common/phone-validator';
 
 @Injectable()
 export class UsersService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private eventEmitter: EventEmitter2,
+  ) {}
 
   private getDescendantIds(users: any[], parentId: string): string[] {
     const result: string[] = [];
@@ -77,9 +89,25 @@ export class UsersService {
       ];
     }
 
-    return this.prisma.user.findMany({
+    const users = await this.prisma.user.findMany({
       where,
-      include: {
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        firstName: true,
+        lastName: true,
+        team: true,
+        role: true,
+        status: true,
+        createdAt: true,
+        updatedAt: true,
+        canViewOthers: true,
+        canManagePermissions: true,
+        customRoleId: true,
+        workspaceId: true,
+        googleId: true,
+        passwordHash: true,
         customRole: {
           select: {
             id: true,
@@ -92,9 +120,23 @@ export class UsersService {
             name: true,
           },
         },
+        teacherProfile: {
+          select: {
+            id: true,
+            slug: true,
+            reviewStatus: true,
+            isPublic: true,
+          },
+        },
       },
       orderBy: { createdAt: 'asc' },
     });
+
+    return users.map(({ googleId, passwordHash, ...rest }) => ({
+      ...rest,
+      authProvider: googleId ? ('google' as const) : ('email' as const),
+      hasPassword: !!passwordHash,
+    }));
   }
 
   async getUserById(workspaceId: string, id: string, callingUserId?: string) {
@@ -149,7 +191,7 @@ export class UsersService {
     const canViewOthers = callingUser.email === 'udaya@gmail.com' ? !!dto.canViewOthers : false;
     const canManagePermissions = callingUser.email === 'udaya@gmail.com' ? !!dto.canManagePermissions : false;
 
-    return this.prisma.user.create({
+    const user = await this.prisma.user.create({
       data: {
         workspaceId,
         email: dto.email,
@@ -166,6 +208,13 @@ export class UsersService {
         customRole: true,
       },
     });
+
+    this.eventEmitter.emit(
+      USER_WELCOME_EVENT,
+      new UserWelcomeEvent(user.id, user.email, user.name, 'member'),
+    );
+
+    return user;
   }
 
   async updateUser(workspaceId: string, id: string, dto: UpdateUserDto, callingUserId: string) {
@@ -244,6 +293,11 @@ export class UsersService {
 
     // Password update
     if (dto.newPassword) {
+      if (!targetUser.passwordHash) {
+        throw new BadRequestException(
+          'This account uses Google sign-in and has no local password. Set one via password reset if needed.',
+        );
+      }
       if (!dto.currentPassword) {
         throw new BadRequestException('Current password is required to set a new password.');
       }
@@ -274,13 +328,18 @@ export class UsersService {
     });
   }
 
-  async deactivateUser(workspaceId: string, id: string, callingUserId: string) {
-    const callingUser = await this.prisma.user.findUnique({ where: { id: callingUserId } });
+  private async assertCanManageUser(
+    workspaceId: string,
+    id: string,
+    callingUserId: string,
+  ) {
+    const callingUser = await this.prisma.user.findUnique({
+      where: { id: callingUserId },
+    });
     if (!callingUser) throw new NotFoundException('Calling user not found.');
 
-    // Fetch target user with access bypass for Udaya
     const targetUser = await this.getUserById(workspaceId, id, callingUserId);
-    if (!targetUser) throw new NotFoundException();
+    if (!targetUser) throw new NotFoundException('User not found or access denied.');
 
     if (callingUser.email !== 'udaya@gmail.com') {
       if (id !== callingUserId) {
@@ -295,12 +354,151 @@ export class UsersService {
       }
     }
 
-    return this.prisma.user.update({
+    return { callingUser, targetUser };
+  }
+
+  /** Soft delete — deactivates the account (status = Inactive). */
+  async softDeleteUser(workspaceId: string, id: string, callingUserId: string) {
+    const { callingUser, targetUser } = await this.assertCanManageUser(
+      workspaceId,
+      id,
+      callingUserId,
+    );
+
+    if (id === callingUserId) {
+      throw new BadRequestException('You cannot soft-delete your own account.');
+    }
+    if (
+      targetUser.email === 'udaya@gmail.com' ||
+      targetUser.customRole?.name === 'Owner'
+    ) {
+      throw new ForbiddenException('The workspace owner cannot be deactivated.');
+    }
+
+    const updated = await this.prisma.user.update({
       where: { id },
-      data: {
-        status: 'Inactive',
-      },
+      data: { status: 'Inactive' },
+      include: { customRole: true, workspace: true },
     });
+
+    return {
+      ...updated,
+      deleteType: 'soft' as const,
+      message: `${targetUser.name || targetUser.email} has been deactivated.`,
+      managedBy: callingUser.email,
+    };
+  }
+
+  /** @deprecated Prefer softDeleteUser — kept for existing clients. */
+  async deactivateUser(workspaceId: string, id: string, callingUserId: string) {
+    return this.softDeleteUser(workspaceId, id, callingUserId);
+  }
+
+  /**
+   * Hard delete — permanently removes the user.
+   * Quizzes they created are reassigned to the acting admin so content is kept.
+   */
+  async hardDeleteUser(workspaceId: string, id: string, callingUserId: string) {
+    const { callingUser, targetUser } = await this.assertCanManageUser(
+      workspaceId,
+      id,
+      callingUserId,
+    );
+
+    if (id === callingUserId) {
+      throw new BadRequestException('You cannot permanently delete your own account.');
+    }
+    if (
+      targetUser.email === 'udaya@gmail.com' ||
+      targetUser.customRole?.name === 'Owner'
+    ) {
+      throw new ForbiddenException('The workspace owner cannot be permanently deleted.');
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      // Keep quiz content; transfer ownership to the acting admin
+      await tx.quiz.updateMany({
+        where: { createdById: id },
+        data: { createdById: callingUserId },
+      });
+      await tx.question.updateMany({
+        where: { createdById: id },
+        data: { createdById: null },
+      });
+      await tx.quizAttempt.updateMany({
+        where: { studentId: id },
+        data: { studentId: null },
+      });
+      await tx.accessReview.deleteMany({ where: { reviewerId: id } });
+      // Clear hierarchy pointers that still reference this user as inviter
+      await tx.user.updateMany({
+        where: { invitedById: id },
+        data: { invitedById: null },
+      });
+      await tx.user.delete({ where: { id } });
+    });
+
+    return {
+      status: 'deleted' as const,
+      deleteType: 'hard' as const,
+      id,
+      email: targetUser.email,
+      message: `${targetUser.name || targetUser.email} has been permanently deleted.`,
+      managedBy: callingUser.email,
+    };
+  }
+
+  /** Activate a pending teacher profile and notify the teacher by email. */
+  async activateTeacherProfile(
+    workspaceId: string,
+    id: string,
+    callingUserId: string,
+  ) {
+    const { callingUser, targetUser } = await this.assertCanManageUser(
+      workspaceId,
+      id,
+      callingUserId,
+    );
+
+    const profile = await this.prisma.teacherProfile.findUnique({
+      where: { userId: id },
+    });
+    if (!profile) {
+      throw new BadRequestException(
+        'This user does not have a teacher profile to activate.',
+      );
+    }
+    if (profile.reviewStatus === 'Active') {
+      throw new BadRequestException('This teacher profile is already active.');
+    }
+
+    const updated = await this.prisma.teacherProfile.update({
+      where: { id: profile.id },
+      data: { reviewStatus: 'Active' },
+    });
+
+    this.eventEmitter.emit(
+      TEACHER_ACTIVATED_EVENT,
+      new TeacherActivatedEvent(
+        targetUser.id,
+        targetUser.email,
+        targetUser.name,
+        `/t/${updated.slug}`,
+      ),
+    );
+
+    return {
+      status: 'activated' as const,
+      userId: id,
+      teacherProfile: {
+        id: updated.id,
+        slug: updated.slug,
+        reviewStatus: updated.reviewStatus,
+        isPublic: updated.isPublic,
+      },
+      message: `${targetUser.name || targetUser.email}'s teacher profile is now active. A confirmation email was sent.`,
+      managedBy: callingUser.email,
+    };
   }
 
   async inviteUser(workspaceId: string, id: string, callingUserId: string) {

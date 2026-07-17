@@ -1,6 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PasswordResetEvent } from './events/password-reset.event';
+import { TeacherActivatedEvent } from './events/teacher-activated.event';
+import { UserWelcomeEvent } from './events/welcome.event';
 import { MailService } from './mail/mail.service';
 import { SmsService } from './sms/sms.service';
 
@@ -33,6 +35,22 @@ export class NotificationDispatcher {
       destination: event.destination,
       message: 'Kadaima Educational password reset.',
       code: event.plainToken,
+    });
+  }
+
+  async dispatchWelcome(event: UserWelcomeEvent) {
+    await this.mailService.sendWelcome({
+      to: event.email,
+      userName: event.userName,
+      accountType: event.accountType,
+    });
+  }
+
+  async dispatchTeacherActivated(event: TeacherActivatedEvent) {
+    await this.mailService.sendTeacherActivated({
+      to: event.email,
+      userName: event.userName,
+      publicPagePath: event.publicPagePath,
     });
   }
 }

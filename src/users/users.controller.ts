@@ -3,12 +3,12 @@ import {
   Get,
   Post,
   Patch,
+  Delete,
   Param,
   Body,
   Query,
   UseGuards,
   Req,
-  ForbiddenException,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -99,11 +99,61 @@ export class UsersController {
     return this.usersService.updateUser(req.user.workspaceId, id, dto, req.user.id);
   }
 
+  @Post(':id/soft-delete')
+  @CheckPolicies({ action: Action.EDIT, subject: Subject.USERS })
+  @ApiOperation({
+    summary: 'Soft-delete a user (deactivate — status set to Inactive)',
+  })
+  @ApiResponse({ status: 200, description: 'User deactivated.' })
+  async softDeleteUser(@Req() req: any, @Param('id') id: string) {
+    return this.usersService.softDeleteUser(
+      req.user.workspaceId,
+      id,
+      req.user.id,
+    );
+  }
+
   @Post(':id/deactivate')
   @CheckPolicies({ action: Action.EDIT, subject: Subject.USERS })
-  @ApiOperation({ summary: 'Deactivates a workspace user' })
+  @ApiOperation({
+    summary: 'Deactivates a workspace user (alias of soft-delete)',
+  })
   async deactivateUser(@Req() req: any, @Param('id') id: string) {
-    return this.usersService.deactivateUser(req.user.workspaceId, id, req.user.id);
+    return this.usersService.deactivateUser(
+      req.user.workspaceId,
+      id,
+      req.user.id,
+    );
+  }
+
+  @Delete(':id')
+  @CheckPolicies({ action: Action.EDIT, subject: Subject.USERS })
+  @ApiOperation({
+    summary:
+      'Hard-delete a user permanently. Quizzes they created are reassigned to you.',
+  })
+  @ApiResponse({ status: 200, description: 'User permanently deleted.' })
+  async hardDeleteUser(@Req() req: any, @Param('id') id: string) {
+    return this.usersService.hardDeleteUser(
+      req.user.workspaceId,
+      id,
+      req.user.id,
+    );
+  }
+
+  @Post(':id/activate-teacher')
+  @CheckPolicies({ action: Action.EDIT, subject: Subject.USERS })
+  @ApiOperation({
+    summary:
+      'Activate a pending teacher profile after review (sends confirmation email)',
+  })
+  @ApiResponse({ status: 200, description: 'Teacher profile activated.' })
+  async activateTeacherProfile(@Req() req: any, @Param('id') id: string) {
+    return this.usersService.activateTeacherProfile(
+      req.user.workspaceId,
+      id,
+      req.user.id,
+    );
   }
 
   @Post(':id/invite')

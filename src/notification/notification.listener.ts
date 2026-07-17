@@ -4,6 +4,14 @@ import {
   PASSWORD_RESET_EVENT,
   PasswordResetEvent,
 } from './events/password-reset.event';
+import {
+  TEACHER_ACTIVATED_EVENT,
+  TeacherActivatedEvent,
+} from './events/teacher-activated.event';
+import {
+  USER_WELCOME_EVENT,
+  UserWelcomeEvent,
+} from './events/welcome.event';
 import { NotificationDispatcher } from './notification.dispatcher';
 
 /**
@@ -24,6 +32,30 @@ export class NotificationListener {
     } catch (err) {
       this.logger.error(
         `Failed to deliver password reset via ${event.channel}`,
+        err instanceof Error ? err.stack : String(err),
+      );
+    }
+  }
+
+  @OnEvent(USER_WELCOME_EVENT, { async: true })
+  async handleWelcome(event: UserWelcomeEvent) {
+    try {
+      await this.dispatcher.dispatchWelcome(event);
+    } catch (err) {
+      this.logger.error(
+        `Failed to deliver welcome email to ${event.email}`,
+        err instanceof Error ? err.stack : String(err),
+      );
+    }
+  }
+
+  @OnEvent(TEACHER_ACTIVATED_EVENT, { async: true })
+  async handleTeacherActivated(event: TeacherActivatedEvent) {
+    try {
+      await this.dispatcher.dispatchTeacherActivated(event);
+    } catch (err) {
+      this.logger.error(
+        `Failed to deliver teacher-activated email to ${event.email}`,
         err instanceof Error ? err.stack : String(err),
       );
     }

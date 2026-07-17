@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { OAuth2Client } from 'google-auth-library';
 import { PrismaService } from '../prisma/prisma.service';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
@@ -14,6 +15,7 @@ import { authenticator } from 'otplib';
 import { RegisterDto } from './dto/register.dto';
 import { RegisterAccountDto } from './dto/register-account.dto';
 import { LoginDto } from './dto/login.dto';
+import { GoogleAuthDto } from './dto/google-auth.dto';
 import {
   ForgotPasswordChannelDto,
   ForgotPasswordDto,
@@ -26,18 +28,69 @@ import {
   PASSWORD_RESET_EVENT,
   PasswordResetEvent,
 } from '../notification/events/password-reset.event';
+import {
+  USER_WELCOME_EVENT,
+  UserWelcomeEvent,
+  WelcomeAccountType,
+} from '../notification/events/welcome.event';
 import { assertValidSlug, slugFromName } from '../teachers/slug.util';
 
 const DEFAULT_WORKSPACE_NAME = 'Techwing LMS';
 
 @Injectable()
 export class AuthService {
+  private readonly googleClient: OAuth2Client;
+
   constructor(
     private prisma: PrismaService,
     private jwtService: JwtService,
     private eventEmitter: EventEmitter2,
     private config: ConfigService,
-  ) {}
+  ) {
+    this.googleClient = new OAuth2Client(
+      this.config.get<string>('GOOGLE_CLIENT_ID'),
+    );
+  }
+
+  private emitWelcomeEmail(input: {
+    userId: string;
+    email: string;
+    userName?: string | null;
+    accountType: WelcomeAccountType;
+  }) {
+    this.eventEmitter.emit(
+      USER_WELCOME_EVENT,
+      new UserWelcomeEvent(
+        input.userId,
+        input.email,
+        input.userName,
+        input.accountType,
+      ),
+    );
+  }
+
+  /**
+   * Teachers with a pending/rejected review cannot sign in until an admin
+   * activates their profile (email/password and Google).
+   */
+  private async assertTeacherLoginAllowed(userId: string) {
+    const profile = await this.prisma.teacherProfile.findUnique({
+      where: { userId },
+      select: { reviewStatus: true },
+    });
+    if (!profile) return;
+
+    if (profile.reviewStatus === 'Pending') {
+      throw new UnauthorizedException(
+        'Your teacher profile is pending admin review. You can sign in after an administrator activates your account.',
+      );
+    }
+    if (profile.reviewStatus === 'Rejected') {
+      throw new UnauthorizedException(
+        'Your teacher profile was not approved. Please contact support for help.',
+      );
+    }
+  }
 
   private hashResetToken(plain: string) {
     return createHash('sha256').update(plain).digest('hex');
@@ -320,6 +373,13 @@ export class AuthService {
       },
     });
 
+    this.emitWelcomeEmail({
+      userId: user.id,
+      email: user.email,
+      userName: user.name,
+      accountType: 'student',
+    });
+
     return {
       userId: user.id,
       workspaceId: workspace.id,
@@ -371,7 +431,15 @@ export class AuthService {
         title: `${displayName}'s classes`,
         description: 'Welcome to my learning page. Explore my quizzes below.',
         isPublic: false,
+        reviewStatus: 'Pending',
       },
+    });
+
+    this.emitWelcomeEmail({
+      userId: user.id,
+      email: user.email,
+      userName: user.name,
+      accountType: 'teacher',
     });
 
     return {
@@ -544,6 +612,20 @@ export class AuthService {
         userId: user.id,
         workspaceId: workspace.id,
         status: 'ONBOARDED',
+        email: user.email,
+        name: user.name,
+      };
+    }).then((result) => {
+      this.emitWelcomeEmail({
+        userId: result.userId,
+        email: result.email,
+        userName: result.name,
+        accountType: 'admin',
+      });
+      return {
+        userId: result.userId,
+        workspaceId: result.workspaceId,
+        status: result.status,
       };
     });
   }
@@ -561,10 +643,15 @@ export class AuthService {
       throw new UnauthorizedException('Your account is deactivated. Please contact support.');
     }
 
-    const isPasswordValid = await bcrypt.compare(
-      dto.password,
-      user.passwordHash,
-    );
+    await this.assertTeacherLoginAllowed(user.id);
+
+    if (!user.passwordHash) {
+      throw new UnauthorizedException(
+        'This account uses Google sign-in. Continue with Google instead.',
+      );
+    }
+
+    const isPasswordValid = await bcrypt.compare(dto.password, user.passwordHash);
     if (!isPasswordValid)
       throw new UnauthorizedException('Invalid login credentials.');
 
@@ -583,11 +670,308 @@ export class AuthService {
     return this.generateSessionTokens(user);
   }
 
+  /**
+   * Google Sign-In: verify GIS ID token, find or create user, return JWT
+   * (same shape as email/password login).
+   */
+  async loginWithGoogle(dto: GoogleAuthDto) {
+    const clientId = this.config.get<string>('GOOGLE_CLIENT_ID')?.trim();
+    if (!clientId) {
+      throw new BadRequestException(
+        'Google sign-in is not configured (GOOGLE_CLIENT_ID missing).',
+      );
+    }
+
+    let payload: {
+      sub?: string;
+      email?: string;
+      email_verified?: boolean | string;
+      name?: string;
+      given_name?: string;
+      family_name?: string;
+    };
+    try {
+      const ticket = await this.googleClient.verifyIdToken({
+        idToken: dto.idToken,
+        audience: clientId,
+      });
+      payload = ticket.getPayload() || {};
+    } catch {
+      throw new UnauthorizedException('Invalid Google sign-in token.');
+    }
+
+    const googleId = payload.sub?.trim();
+    const email = payload.email?.trim().toLowerCase();
+    const emailVerified =
+      payload.email_verified === true || payload.email_verified === 'true';
+
+    if (!googleId || !email || !emailVerified) {
+      throw new UnauthorizedException(
+        'Google account email is missing or not verified.',
+      );
+    }
+
+    const displayName =
+      payload.name?.trim() ||
+      [payload.given_name, payload.family_name].filter(Boolean).join(' ').trim() ||
+      email.split('@')[0];
+
+    const accountType = dto.accountType === 'teacher' ? 'teacher' : 'student';
+
+    let existing = await this.prisma.user.findFirst({
+      where: {
+        OR: [{ googleId }, { email }],
+      },
+    });
+
+    let userId: string;
+
+    if (existing) {
+      if (existing.status === 'Inactive') {
+        throw new UnauthorizedException(
+          'Your account is deactivated. Please contact support.',
+        );
+      }
+      if (!existing.googleId) {
+        existing = await this.prisma.user.update({
+          where: { id: existing.id },
+          data: {
+            googleId,
+            name: existing.name || displayName,
+            firstName:
+              existing.firstName || payload.given_name || displayName.split(' ')[0],
+            lastName:
+              existing.lastName ||
+              payload.family_name ||
+              displayName.split(' ').slice(1).join(' ') ||
+              null,
+          },
+        });
+      }
+      // Teacher Google register: assign Teacher role even if the account already exists
+      if (accountType === 'teacher') {
+        await this.ensureTeacherAccessForGoogleUser({
+          userId: existing.id,
+          displayName: existing.name || displayName,
+          email: existing.email,
+        });
+      }
+      userId = existing.id;
+    } else if (accountType === 'teacher') {
+      const created = await this.registerTeacherFromGoogle({
+        email,
+        googleId,
+        displayName,
+        givenName: payload.given_name,
+        familyName: payload.family_name,
+      });
+      userId = created.userId;
+    } else {
+      const created = await this.registerStudentFromGoogle({
+        email,
+        googleId,
+        displayName,
+        givenName: payload.given_name,
+        familyName: payload.family_name,
+      });
+      userId = created.userId;
+    }
+
+    const user = await this.prisma.user.findUniqueOrThrow({
+      where: { id: userId },
+      include: { workspace: true },
+    });
+
+    await this.assertTeacherLoginAllowed(user.id);
+
+    if (user.isTwoFactorEnabled) {
+      return {
+        requires2FA: true,
+        preAuthToken: this.jwtService.sign(
+          { sub: user.id, scope: '2fa_pending' },
+          { expiresIn: '5m' },
+        ),
+      };
+    }
+
+    return this.generateSessionTokens(user);
+  }
+
+  private async registerStudentFromGoogle(input: {
+    email: string;
+    googleId: string;
+    displayName: string;
+    givenName?: string;
+    familyName?: string;
+  }) {
+    const workspace = await this.getDefaultWorkspace();
+    const user = await this.prisma.user.create({
+      data: {
+        email: input.email,
+        googleId: input.googleId,
+        passwordHash: null,
+        name: input.displayName,
+        firstName: input.givenName || input.displayName.split(' ')[0],
+        lastName:
+          input.familyName ||
+          input.displayName.split(' ').slice(1).join(' ') ||
+          null,
+        team: 'Student',
+        role: Role.USER,
+        workspaceId: workspace.id,
+        status: 'Active',
+        canViewOthers: false,
+        canManagePermissions: false,
+      },
+    });
+    this.emitWelcomeEmail({
+      userId: user.id,
+      email: user.email,
+      userName: user.name,
+      accountType: 'student',
+    });
+    return { userId: user.id };
+  }
+
+  /**
+   * When signing in via Google from the teacher register page, ensure the user
+   * has the Teacher custom role + TeacherProfile (without demoting Owners).
+   */
+  private async ensureTeacherAccessForGoogleUser(input: {
+    userId: string;
+    displayName: string;
+    email: string;
+  }) {
+    const user = await this.prisma.user.findUniqueOrThrow({
+      where: { id: input.userId },
+      include: { workspace: true, customRole: true, teacherProfile: true },
+    });
+
+    if (
+      user.role === Role.SUPER_ADMIN ||
+      user.role === Role.CUSTOMER_ADMIN ||
+      user.customRole?.name === 'Owner'
+    ) {
+      return user;
+    }
+
+    const teacherRole = await this.ensureTeacherRole(user.workspaceId);
+    const needsRole =
+      user.customRoleId !== teacherRole.id || user.team !== 'Teacher';
+
+    let updated = user;
+    if (needsRole) {
+      updated = await this.prisma.user.update({
+        where: { id: user.id },
+        data: {
+          team: 'Teacher',
+          customRoleId: teacherRole.id,
+        },
+        include: { workspace: true, customRole: true, teacherProfile: true },
+      });
+    }
+
+    if (!updated.teacherProfile) {
+      await this.createTeacherProfileForUser({
+        userId: updated.id,
+        displayName: input.displayName,
+        email: input.email,
+      });
+      updated = await this.prisma.user.findUniqueOrThrow({
+        where: { id: updated.id },
+        include: { workspace: true, customRole: true, teacherProfile: true },
+      });
+    }
+
+    return updated;
+  }
+
+  private async createTeacherProfileForUser(input: {
+    userId: string;
+    displayName: string;
+    email: string;
+  }) {
+    let slug = slugFromName(input.displayName, input.email);
+    try {
+      slug = assertValidSlug(slug);
+    } catch {
+      slug = `teacher-${input.userId.slice(0, 8)}`;
+    }
+    const taken = await this.prisma.teacherProfile.findUnique({ where: { slug } });
+    if (taken) slug = `${slug}-${input.userId.slice(0, 6)}`;
+
+    await this.prisma.teacherProfile.create({
+      data: {
+        userId: input.userId,
+        slug,
+        displayName: input.displayName,
+        title: `${input.displayName}'s classes`,
+        description: 'Welcome to my learning page. Explore my quizzes below.',
+        isPublic: false,
+        reviewStatus: 'Pending',
+      },
+    });
+  }
+
+  private async registerTeacherFromGoogle(input: {
+    email: string;
+    googleId: string;
+    displayName: string;
+    givenName?: string;
+    familyName?: string;
+  }) {
+    const workspace = await this.getDefaultWorkspace();
+    const teacherRole = await this.ensureTeacherRole(workspace.id);
+    const user = await this.prisma.user.create({
+      data: {
+        email: input.email,
+        googleId: input.googleId,
+        passwordHash: null,
+        name: input.displayName,
+        firstName: input.givenName || input.displayName.split(' ')[0],
+        lastName:
+          input.familyName ||
+          input.displayName.split(' ').slice(1).join(' ') ||
+          null,
+        team: 'Teacher',
+        role: Role.USER,
+        workspaceId: workspace.id,
+        customRoleId: teacherRole.id,
+        status: 'Active',
+        canViewOthers: false,
+        canManagePermissions: false,
+      },
+    });
+
+    await this.createTeacherProfileForUser({
+      userId: user.id,
+      displayName: input.displayName,
+      email: input.email,
+    });
+
+    this.emitWelcomeEmail({
+      userId: user.id,
+      email: user.email,
+      userName: user.name,
+      accountType: 'teacher',
+    });
+
+    return { userId: user.id };
+  }
+
   // 3. Second-Factor Verification Resolver
   async verifyTwoFactor(userId: string, token: string) {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user || !user.twoFactorSecret)
       throw new BadRequestException('MFA profile uninitialized.');
+
+    if (user.status === 'Inactive') {
+      throw new UnauthorizedException(
+        'Your account is deactivated. Please contact support.',
+      );
+    }
+
+    await this.assertTeacherLoginAllowed(user.id);
 
     const isValid = authenticator.verify({
       token,

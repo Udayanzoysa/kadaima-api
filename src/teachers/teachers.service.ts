@@ -62,6 +62,7 @@ export class TeachersService {
         title: `${displayName}'s classes`,
         description: 'Welcome to my learning page. Explore my quizzes below.',
         isPublic: false,
+        reviewStatus: 'Pending',
         quizVisibility: TeacherQuizVisibility.ALL,
       },
     });
@@ -162,6 +163,12 @@ export class TeachersService {
           : (this.normalizePageLayout(dto.pageLayout) as unknown as Prisma.InputJsonValue);
     }
 
+    if (dto.isPublic === true && profile.reviewStatus !== 'Active') {
+      throw new BadRequestException(
+        'Your teacher profile is pending admin review. You can publish after it is activated.',
+      );
+    }
+
     await this.prisma.teacherProfile.update({
       where: { id: profile.id },
       data: {
@@ -198,7 +205,11 @@ export class TeachersService {
   async getPublicBySlug(slug: string) {
     const normalized = slug.trim().toLowerCase();
     const profile = await this.prisma.teacherProfile.findFirst({
-      where: { slug: normalized, isPublic: true },
+      where: {
+        slug: normalized,
+        isPublic: true,
+        reviewStatus: 'Active',
+      },
       include: {
         banners: {
           where: { isActive: true },
@@ -502,7 +513,7 @@ export class TeachersService {
   async createPublicInquiry(slug: string, dto: CreateTeacherInquiryDto) {
     const normalized = slug.trim().toLowerCase();
     const profile = await this.prisma.teacherProfile.findFirst({
-      where: { slug: normalized, isPublic: true },
+      where: { slug: normalized, isPublic: true, reviewStatus: 'Active' },
       select: { id: true },
     });
     if (!profile) throw new NotFoundException('Teacher page not found');

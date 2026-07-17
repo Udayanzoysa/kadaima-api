@@ -12,7 +12,11 @@ import {
 import {
   buildPasswordResetEmail,
   buildSmtpTestEmail,
+  buildTeacherActivatedEmail,
+  buildWelcomeEmail,
   PasswordResetEmailContent,
+  WelcomeAccountType,
+  WelcomeEmailContent,
 } from './email-templates';
 
 export interface SentMailResult {
@@ -176,6 +180,46 @@ export class MailService implements INotificationService {
     return this.deliver({
       to,
       subject: `[SMTP TEST] ${content.subject}`,
+      text: content.text,
+      html: content.html,
+    });
+  }
+
+  async sendWelcome(options: {
+    to: string;
+    userName?: string | null;
+    accountType?: WelcomeAccountType;
+  }): Promise<SentMailResult> {
+    const content: WelcomeEmailContent = buildWelcomeEmail({
+      recipientEmail: options.to,
+      userName: options.userName || undefined,
+      accountType: options.accountType,
+      frontendUrl: this.getFrontendUrl(),
+      supportEmail: this.getSupportEmail(),
+    });
+    return this.deliver({
+      to: options.to,
+      subject: content.subject,
+      text: content.text,
+      html: content.html,
+    });
+  }
+
+  async sendTeacherActivated(options: {
+    to: string;
+    userName?: string | null;
+    publicPagePath?: string | null;
+  }): Promise<SentMailResult> {
+    const content = buildTeacherActivatedEmail({
+      recipientEmail: options.to,
+      userName: options.userName || undefined,
+      frontendUrl: this.getFrontendUrl(),
+      supportEmail: this.getSupportEmail(),
+      publicPagePath: options.publicPagePath,
+    });
+    return this.deliver({
+      to: options.to,
+      subject: content.subject,
       text: content.text,
       html: content.html,
     });
