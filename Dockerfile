@@ -25,4 +25,4 @@ RUN npm run build
 EXPOSE 4000
 
 # Apply migrations, then start the API
-CMD ["sh", "-c", "npx prisma migrate deploy && node dist/main.js"]
+CMD ["sh", "-c", "npx prisma migrate deploy && node dist/src/main.js"]
