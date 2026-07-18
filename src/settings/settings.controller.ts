@@ -17,6 +17,7 @@ import {
   UpdateNotificationSettingsDto,
 } from './dto/notification-settings.dto';
 import { UpdateAiSettingsDto } from './dto/ai-settings.dto';
+import { UpdateSeoSettingsDto } from './dto/seo-settings.dto';
 import { SettingsService } from './settings.service';
 
 @ApiTags('Platform Settings')
@@ -88,5 +89,18 @@ export class SettingsController {
   @ApiOperation({ summary: 'Update Gemini AI settings for Kadaima Expert + WhatsApp bot' })
   updateAiSettings(@Body() dto: UpdateAiSettingsDto, @Req() req: any) {
     return this.settingsService.updateAiSettings(dto, req.user?.id);
+  }
+
+  @Get('seo')
+  @ApiOperation({ summary: 'Get site branding / SEO / Google Analytics settings' })
+  getSeoSettings() {
+    return this.settingsService.getSeoSettings();
+  }
+
+  @Put('seo')
+  @Audit('SETTINGS', AuditAction.UPDATE)
+  @ApiOperation({ summary: 'Update site branding / SEO / Google Analytics settings' })
+  updateSeoSettings(@Body() dto: UpdateSeoSettingsDto, @Req() req: any) {
+    return this.settingsService.updateSeoSettings(dto, req.user?.id);
   }
 }

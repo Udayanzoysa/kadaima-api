@@ -360,6 +360,8 @@ model SystemSetting {
   billing         Json?
   /// { enabled, provider, model, apiKey?, fallbacks? } — Kadaima Expert chat + WhatsApp bot
   ai              Json?
+  /// { siteName, metaTitle, metaDescription, googleAnalyticsId?, ogImageUrl?, keywords? }
+  seo             Json?
   /// Super-admin toggle — when false, AuditService.log() becomes a no-op.
   auditLogEnabled Boolean  @default(true) @map("audit_log_enabled")
   updatedAt       DateTime @updatedAt @map("updated_at")

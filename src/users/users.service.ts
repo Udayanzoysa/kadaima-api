@@ -20,6 +20,7 @@ import {
 import * as bcrypt from 'bcrypt';
 import { authenticator } from 'otplib';
 import { validateAndCleanSriLankanNumber } from '../common/phone-validator';
+import { isPlatformOwner } from '../common/platform-owner';
 
 @Injectable()
 export class UsersService {
@@ -57,7 +58,7 @@ export class UsersService {
     const where: any = {};
 
     // Apply visibility scoping hierarchy & workspace isolation
-    if (callingUser.email !== 'udaya@gmail.com') {
+    if (!isPlatformOwner(callingUser)) {
       where.workspaceId = workspaceId;
       if (callingUser.canViewOthers) {
         const allUsers = await this.prisma.user.findMany({
@@ -140,16 +141,16 @@ export class UsersService {
   }
 
   async getUserById(workspaceId: string, id: string, callingUserId?: string) {
-    let callingUserEmail = '';
+    let caller: { email: string; role: string } | null = null;
     if (callingUserId) {
-      const caller = await this.prisma.user.findUnique({
+      caller = await this.prisma.user.findUnique({
         where: { id: callingUserId },
+        select: { email: true, role: true },
       });
-      callingUserEmail = caller?.email || '';
     }
 
     const where: any = { id };
-    if (callingUserEmail !== 'udaya@gmail.com') {
+    if (!caller || !isPlatformOwner(caller)) {
       where.workspaceId = workspaceId;
     }
 
@@ -172,7 +173,7 @@ export class UsersService {
     if (!callingUser) throw new NotFoundException('Calling user not found.');
 
     // Level 0 or delegated managers only
-    if (callingUser.email !== 'udaya@gmail.com' && !callingUser.canManagePermissions) {
+    if (!isPlatformOwner(callingUser) && !callingUser.canManagePermissions) {
       throw new ForbiddenException('You do not have permission to add users.');
     }
 
@@ -188,8 +189,10 @@ export class UsersService {
     );
 
     // Only Level 0 can configure view/manage delegation settings
-    const canViewOthers = callingUser.email === 'udaya@gmail.com' ? !!dto.canViewOthers : false;
-    const canManagePermissions = callingUser.email === 'udaya@gmail.com' ? !!dto.canManagePermissions : false;
+    const canViewOthers = isPlatformOwner(callingUser) ? !!dto.canViewOthers : false;
+    const canManagePermissions = isPlatformOwner(callingUser)
+      ? !!dto.canManagePermissions
+      : false;
 
     const user = await this.prisma.user.create({
       data: {
@@ -228,7 +231,7 @@ export class UsersService {
     if (!targetUser) throw new NotFoundException();
 
     // Hierarchical update verification
-    if (callingUser.email !== 'udaya@gmail.com') {
+    if (!isPlatformOwner(callingUser)) {
       if (id !== callingUserId) {
         const allUsers = await this.prisma.user.findMany({ where: { workspaceId } });
         const descendantIds = this.getDescendantIds(allUsers, callingUserId);
@@ -313,7 +316,7 @@ export class UsersService {
     }
 
     // Permission flags are exclusive to Level 0
-    if (callingUser.email === 'udaya@gmail.com') {
+    if (isPlatformOwner(callingUser)) {
       if (dto.canViewOthers !== undefined) updateData.canViewOthers = dto.canViewOthers;
       if (dto.canManagePermissions !== undefined) updateData.canManagePermissions = dto.canManagePermissions;
     }
@@ -341,7 +344,7 @@ export class UsersService {
     const targetUser = await this.getUserById(workspaceId, id, callingUserId);
     if (!targetUser) throw new NotFoundException('User not found or access denied.');
 
-    if (callingUser.email !== 'udaya@gmail.com') {
+    if (!isPlatformOwner(callingUser)) {
       if (id !== callingUserId) {
         const allUsers = await this.prisma.user.findMany({ where: { workspaceId } });
         const descendantIds = this.getDescendantIds(allUsers, callingUserId);
@@ -368,10 +371,7 @@ export class UsersService {
     if (id === callingUserId) {
       throw new BadRequestException('You cannot soft-delete your own account.');
     }
-    if (
-      targetUser.email === 'udaya@gmail.com' ||
-      targetUser.customRole?.name === 'Owner'
-    ) {
+    if (isPlatformOwner(targetUser) || targetUser.customRole?.name === 'Owner') {
       throw new ForbiddenException('The workspace owner cannot be deactivated.');
     }
 
@@ -408,10 +408,7 @@ export class UsersService {
     if (id === callingUserId) {
       throw new BadRequestException('You cannot permanently delete your own account.');
     }
-    if (
-      targetUser.email === 'udaya@gmail.com' ||
-      targetUser.customRole?.name === 'Owner'
-    ) {
+    if (isPlatformOwner(targetUser) || targetUser.customRole?.name === 'Owner') {
       throw new ForbiddenException('The workspace owner cannot be permanently deleted.');
     }
 
@@ -509,7 +506,7 @@ export class UsersService {
     const targetUser = await this.getUserById(workspaceId, id, callingUserId);
     if (!targetUser) throw new NotFoundException();
 
-    if (callingUser.email !== 'udaya@gmail.com') {
+    if (!isPlatformOwner(callingUser)) {
       const allUsers = await this.prisma.user.findMany({ where: { workspaceId } });
       const descendantIds = this.getDescendantIds(allUsers, callingUserId);
       if (!descendantIds.includes(id)) {

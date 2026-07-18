@@ -548,11 +548,11 @@ async function main() {
 
   const superAdmin = await prisma.user.create({
     data: {
-      email: 'udaya@gmail.com',
+      email: 'unzoysa.un@gmail.com',
       passwordHash,
       role: Role.SUPER_ADMIN,
-      name: 'Udaya',
-      firstName: 'Udaya',
+      name: 'Super Admin',
+      firstName: 'Super',
       lastName: 'Admin',
       team: 'Executive',
       status: 'Active',

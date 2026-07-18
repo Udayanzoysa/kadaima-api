@@ -108,10 +108,16 @@ export class AuthService {
   /**
    * Teachers with a pending/rejected review cannot sign in until an admin
    * activates their profile (email/password and Google).
+   * Super admins are never blocked by teacher review status.
    */
-  private async assertTeacherLoginAllowed(userId: string) {
+  private async assertTeacherLoginAllowed(user: {
+    id: string;
+    role: Role | string;
+  }) {
+    if (user.role === Role.SUPER_ADMIN) return;
+
     const profile = await this.prisma.teacherProfile.findUnique({
-      where: { userId },
+      where: { userId: user.id },
       select: { reviewStatus: true },
     });
     if (!profile) return;
@@ -691,7 +697,7 @@ export class AuthService {
       throw new UnauthorizedException('Your account is deactivated. Please contact support.');
     }
 
-    await this.assertTeacherLoginAllowed(user.id);
+    await this.assertTeacherLoginAllowed(user);
 
     if (!user.passwordHash) {
       this.logLoginFailed(dto.email, meta, 'Google-only account');
@@ -834,7 +840,7 @@ export class AuthService {
       include: { workspace: true },
     });
 
-    await this.assertTeacherLoginAllowed(user.id);
+    await this.assertTeacherLoginAllowed(user);
 
     if (user.isTwoFactorEnabled) {
       return {
@@ -1024,7 +1030,7 @@ export class AuthService {
       );
     }
 
-    await this.assertTeacherLoginAllowed(user.id);
+    await this.assertTeacherLoginAllowed(user);
 
     const isValid = authenticator.verify({
       token,

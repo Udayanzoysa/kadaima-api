@@ -10,12 +10,14 @@ import {
 import { NotificationConfigService } from './notification-config.service';
 import { UpdateBillingSettingsDto } from './dto/billing-settings.dto';
 import { UpdateAiSettingsDto } from './dto/ai-settings.dto';
+import { UpdateSeoSettingsDto } from './dto/seo-settings.dto';
 import {
   DEFAULT_SMTP_CONFIG,
   mergeBilling,
   SmsConfig,
   SmtpConfig,
 } from './notification-config.types';
+import { mergeSeo } from './seo-config.types';
 
 const SETTINGS_ID = 'default';
 
@@ -157,6 +159,54 @@ export class SettingsService {
       apiKey: (obj.apiKey || envKey).trim(),
       fallbacks: (obj.fallbacks || envFallbacks).trim(),
     };
+  }
+
+  async getSeoSettings() {
+    const row = await this.ensureRow();
+    const seo = mergeSeo(row.seo);
+    return {
+      ...seo,
+      updatedAt: row.updatedAt,
+    };
+  }
+
+  /** Public, non-secret SEO fields for the website (meta + Analytics ID). */
+  async getPublicSeoSettings() {
+    const seo = await this.getSeoSettings();
+    return {
+      siteName: seo.siteName,
+      metaTitle: seo.metaTitle,
+      metaDescription: seo.metaDescription,
+      googleAnalyticsId: seo.googleAnalyticsId || null,
+      ogImageUrl: seo.ogImageUrl || null,
+      keywords: seo.keywords || null,
+    };
+  }
+
+  async updateSeoSettings(dto: UpdateSeoSettingsDto, updatedBy?: string) {
+    const current = mergeSeo((await this.ensureRow()).seo);
+    const next = mergeSeo({
+      siteName: dto.siteName !== undefined ? dto.siteName : current.siteName,
+      metaTitle: dto.metaTitle !== undefined ? dto.metaTitle : current.metaTitle,
+      metaDescription:
+        dto.metaDescription !== undefined ? dto.metaDescription : current.metaDescription,
+      googleAnalyticsId:
+        dto.googleAnalyticsId !== undefined
+          ? dto.googleAnalyticsId
+          : current.googleAnalyticsId,
+      ogImageUrl: dto.ogImageUrl !== undefined ? dto.ogImageUrl : current.ogImageUrl,
+      keywords: dto.keywords !== undefined ? dto.keywords : current.keywords,
+    });
+
+    await this.prisma.systemSetting.update({
+      where: { id: SETTINGS_ID },
+      data: {
+        seo: next as unknown as Prisma.InputJsonValue,
+        updatedBy: updatedBy ?? null,
+      },
+    });
+
+    return this.getSeoSettings();
   }
 
   async updateNotificationSettings(
