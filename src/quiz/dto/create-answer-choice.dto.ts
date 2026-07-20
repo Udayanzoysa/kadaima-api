@@ -1,6 +1,6 @@
-import { IsBoolean, ValidateNested } from 'class-validator';
+import { IsBoolean, IsOptional, IsString, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { LocalizedTextDto } from './localized-text.dto';
 
 export class CreateAnswerChoiceDto {
@@ -8,6 +8,13 @@ export class CreateAnswerChoiceDto {
   @ValidateNested()
   @Type(() => LocalizedTextDto)
   choiceText: LocalizedTextDto;
+
+  @ApiPropertyOptional({
+    description: 'Optional image URL for this choice (after upload)',
+  })
+  @IsOptional()
+  @IsString()
+  imageUrl?: string | null;
 
   @ApiProperty({ default: false })
   @IsBoolean()

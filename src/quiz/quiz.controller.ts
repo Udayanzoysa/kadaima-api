@@ -9,6 +9,8 @@ import {
   Put,
   Query,
   Req,
+  Res,
+  StreamableFile,
   UploadedFile,
   UseGuards,
   UseInterceptors,
@@ -22,9 +24,10 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { diskStorage } from 'multer';
+import { diskStorage, memoryStorage } from 'multer';
 import { extname, join } from 'path';
 import { existsSync, mkdirSync } from 'fs';
+import type { Response } from 'express';
 import { QuizService } from './quiz.service';
 import { CreateQuizDto } from './dto/create-quiz.dto';
 import {
@@ -148,6 +151,43 @@ export class QuizController {
   @ApiOperation({ summary: 'Bulk delete quizzes (archives if attempts exist)' })
   bulkDelete(@Body() dto: BulkQuizIdsDto) {
     return this.quizService.bulkDelete(dto.ids);
+  }
+
+  @Get('export')
+  @ApiOperation({ summary: 'Export quizzes backup (JSON or Excel)' })
+  @ApiQuery({ name: 'format', required: false, enum: ['json', 'xlsx'] })
+  async exportBackup(
+    @Query('format') format: string | undefined,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const fmt = format === 'xlsx' ? 'xlsx' : 'json';
+    const file = await this.quizService.exportBackup(fmt);
+    res.set({
+      'Content-Type': file.contentType,
+      'Content-Disposition': `attachment; filename="${file.filename}"`,
+    });
+    return new StreamableFile(file.buffer);
+  }
+
+  @Post('import')
+  @Audit('QUIZZES', AuditAction.CREATE)
+  @ApiOperation({ summary: 'Import quizzes backup (JSON or Excel)' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: { file: { type: 'string', format: 'binary' } },
+      required: ['file'],
+    },
+  })
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: memoryStorage(),
+      limits: { fileSize: 40 * 1024 * 1024 },
+    }),
+  )
+  importBackup(@UploadedFile() file: Express.Multer.File, @Req() req: any) {
+    return this.quizService.importBackup(file, req.user.id);
   }
 
   @Post()

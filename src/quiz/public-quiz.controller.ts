@@ -24,16 +24,44 @@ export class PublicQuizController {
     required: false,
     description: 'When set, only quizzes created by that public teacher',
   })
+  @ApiQuery({
+    name: 'courseId',
+    required: false,
+    description: 'Filter quizzes to a single course',
+  })
+  @ApiQuery({
+    name: 'moduleId',
+    required: false,
+    description: 'Filter quizzes to a single module',
+  })
+  @ApiQuery({
+    name: 'q',
+    required: false,
+    description: 'Search by course / module / quiz title (en, si, ta)',
+  })
   listPublished(
     @Query('guestSessionId') guestSessionId?: string,
     @Query('userId') userId?: string,
     @Query('teacherSlug') teacherSlug?: string,
+    @Query('courseId') courseId?: string,
+    @Query('moduleId') moduleId?: string,
+    @Query('q') q?: string,
   ) {
     return this.quizService.listPublishedQuizzes(
       guestSessionId,
       userId,
       teacherSlug,
+      { courseId, moduleId, q },
     );
+  }
+
+  @Get('catalog-index')
+  @ApiOperation({
+    summary:
+      'Lightweight searchable index of published courses & modules (for home sidebar search)',
+  })
+  getCatalogIndex() {
+    return this.quizService.getPublishedCatalogIndex();
   }
 
   @Get('in-progress')

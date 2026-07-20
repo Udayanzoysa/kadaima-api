@@ -8,14 +8,23 @@ import {
   Post,
   Put,
   Query,
+  Res,
+  StreamableFile,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
+  ApiBody,
+  ApiConsumes,
   ApiOperation,
   ApiQuery,
   ApiTags,
 } from '@nestjs/swagger';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
+import type { Response } from 'express';
 import { AuditAction, CourseStatus } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { Audit } from '../audit/audit-log.decorator';
@@ -72,6 +81,43 @@ export class CourseController {
   @ApiOperation({ summary: 'Bulk delete courses (archives if quizzes exist)' })
   bulkDeleteCourses(@Body() dto: BulkCourseIdsDto) {
     return this.courseService.bulkDeleteCourses(dto.ids);
+  }
+
+  @Get('export')
+  @ApiOperation({ summary: 'Export courses + modules backup (JSON or Excel)' })
+  @ApiQuery({ name: 'format', required: false, enum: ['json', 'xlsx'] })
+  async exportBackup(
+    @Query('format') format: string | undefined,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const fmt = format === 'xlsx' ? 'xlsx' : 'json';
+    const file = await this.courseService.exportBackup(fmt);
+    res.set({
+      'Content-Type': file.contentType,
+      'Content-Disposition': `attachment; filename="${file.filename}"`,
+    });
+    return new StreamableFile(file.buffer);
+  }
+
+  @Post('import')
+  @Audit('COURSES', AuditAction.CREATE)
+  @ApiOperation({ summary: 'Import courses + modules backup (JSON or Excel)' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: { file: { type: 'string', format: 'binary' } },
+      required: ['file'],
+    },
+  })
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: memoryStorage(),
+      limits: { fileSize: 20 * 1024 * 1024 },
+    }),
+  )
+  importBackup(@UploadedFile() file: Express.Multer.File) {
+    return this.courseService.importBackup(file);
   }
 
   @Post()
@@ -151,6 +197,47 @@ export class CourseController {
     @Body() dto: BulkModuleIdsDto,
   ) {
     return this.courseService.bulkDeleteModules(courseId, dto.ids);
+  }
+
+  @Get(':courseId/modules/export')
+  @ApiOperation({ summary: 'Export modules for a course (JSON or Excel)' })
+  @ApiQuery({ name: 'format', required: false, enum: ['json', 'xlsx'] })
+  async exportModulesBackup(
+    @Param('courseId') courseId: string,
+    @Query('format') format: string | undefined,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const fmt = format === 'xlsx' ? 'xlsx' : 'json';
+    const file = await this.courseService.exportModulesBackup(courseId, fmt);
+    res.set({
+      'Content-Type': file.contentType,
+      'Content-Disposition': `attachment; filename="${file.filename}"`,
+    });
+    return new StreamableFile(file.buffer);
+  }
+
+  @Post(':courseId/modules/import')
+  @Audit('COURSES', AuditAction.CREATE)
+  @ApiOperation({ summary: 'Import modules into a course (JSON or Excel)' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: { file: { type: 'string', format: 'binary' } },
+      required: ['file'],
+    },
+  })
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: memoryStorage(),
+      limits: { fileSize: 20 * 1024 * 1024 },
+    }),
+  )
+  importModulesBackup(
+    @Param('courseId') courseId: string,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    return this.courseService.importModulesBackup(courseId, file);
   }
 
   @Post(':courseId/modules')

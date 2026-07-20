@@ -42,7 +42,7 @@ enum QuizStatus {
   Archived
 }
 
-/// Single content language for a quiz (no mixed-language quizzes).
+/// Content language codes used by quizzes and localized JSON fields.
 enum ContentLanguage {
   en
   si
@@ -535,8 +535,10 @@ model Quiz {
   course                 Course          @relation(fields: [courseId], references: [id], onDelete: Cascade)
   moduleId               String?         @map("module_id") @db.Uuid
   module                 Module?         @relation(fields: [moduleId], references: [id], onDelete: SetNull)
-  /// Quiz content language — title, description, and all questions must match.
+  /// Primary / default take language (first of `languages`).
   language               ContentLanguage @default(en)
+  /// Languages this quiz uses — title, description, and questions must cover all.
+  languages              ContentLanguage[] @default([en])
   title                  Json
   description            Json?
   coverImageUrl          String?         @map("cover_image_url")
@@ -552,6 +554,7 @@ model Quiz {
   createdAt              DateTime       @default(now()) @map("created_at")
   updatedAt              DateTime       @updatedAt @map("updated_at")
   quizQuestions          QuizQuestion[]
+  sections               QuizSection[]
   attempts               QuizAttempt[]
   paymentOrders          PaymentOrder[]
   unlocks                QuizUnlock[]
@@ -564,6 +567,22 @@ model Quiz {
   @@index([createdById])
   @@index([status])
   @@map("quizzes")
+}
+
+/// Instruction / passage block that groups nested questions on a quiz.
+model QuizSection {
+  id          String         @id @default(uuid()) @db.Uuid
+  quizId      String         @map("quiz_id") @db.Uuid
+  quiz        Quiz           @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  /// Localized instruction or comprehension passage { en, si, ta }.
+  instruction Json
+  sortOrder   Int            @map("sort_order")
+  createdAt   DateTime       @default(now()) @map("created_at")
+  updatedAt   DateTime       @updatedAt @map("updated_at")
+  quizQuestions QuizQuestion[]
+
+  @@index([quizId])
+  @@map("quiz_sections")
 }
 
 model PaymentOrder {
@@ -678,16 +697,20 @@ model Question {
 }
 
 model QuizQuestion {
-  id         String   @id @default(uuid()) @db.Uuid
-  quizId     String   @map("quiz_id") @db.Uuid
-  quiz       Quiz     @relation(fields: [quizId], references: [id], onDelete: Cascade)
-  questionId String   @map("question_id") @db.Uuid
-  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
-  sortOrder  Int      @map("sort_order")
+  id         String       @id @default(uuid()) @db.Uuid
+  quizId     String       @map("quiz_id") @db.Uuid
+  quiz       Quiz         @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  questionId String       @map("question_id") @db.Uuid
+  question   Question     @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  /// Null = ungrouped (legacy flat quizzes).
+  sectionId  String?      @map("section_id") @db.Uuid
+  section    QuizSection? @relation(fields: [sectionId], references: [id], onDelete: SetNull)
+  sortOrder  Int          @map("sort_order")
 
   @@unique([quizId, questionId])
   @@index([quizId])
   @@index([questionId])
+  @@index([sectionId])
   @@map("quiz_questions")
 }
 
@@ -696,6 +719,8 @@ model AnswerChoice {
   questionId String   @map("question_id") @db.Uuid
   question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
   choiceText Json     @map("choice_text")
+  /// Optional image for image-based MCQ / sequence options.
+  imageUrl   String?  @map("image_url")
   isCorrect  Boolean  @default(false) @map("is_correct")
   responses  StudentResponse[]
 

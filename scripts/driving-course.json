@@ -1,0 +1,50 @@
+{
+  "title": {
+    "en": "Driving Licence Examination (Sri Lanka)",
+    "si": "රියදුරු බලපත්‍ර විභාගය (ශ්‍රී ලංකාව)",
+    "ta": "ஓட்டுநர் உரிமத் தேர்வு (இலங்கை)"
+  },
+  "description": {
+    "en": "Motor Traffic Department written theory and practical preparation for light and heavy vehicle licence categories in Sri Lanka.",
+    "si": "ශ්‍රී ලංකාවේ සැහැල්ලු සහ බර රථ වාහන බලපත්‍ර කාණ්ඩ සඳහා මෝටර් රථ ප්‍රවාහන දෙපාර්තමේන්තුවේ ලිඛිත න්‍යාය සහ ප්‍රායෝගික සූදානම.",
+    "ta": "இலங்கையில் இலகு மற்றும் கனரக வாகன உரிம வகைகளுக்கான மோட்டார் போக்குவரத்துத் திணைக்கள எழுத்துக் கோட்பாடு மற்றும் நடைமுறைத் தயாரிப்பு."
+  },
+  "modules": [
+    {
+      "title": {
+        "en": "Highway Code & Road Signs",
+        "si": "මාර්ග නීති සහ මාර්ග සංඥා",
+        "ta": "நெடுஞ்சாலை விதிகள் & சாலை அடையாளங்கள்"
+      },
+      "description": {
+        "en": "Road signs, markings, right of way, and Motor Traffic Act basics for the written paper.",
+        "si": "ලිඛිත ප්‍රශ්න පත්‍රය සඳහා මාර්ග සංඥා, රේඛා, ප්‍රමුඛතාව සහ මෝටර් රථ ප්‍රවාහන පනතේ මූලික කරුණු.",
+        "ta": "எழுத்துத் தேர்வுக்கான சாலை அடையாளங்கள், குறியீடுகள், முன்னுரிமை மற்றும் மோட்டார் போக்குவரத்துச் சட்ட அடிப்படைகள்."
+      }
+    },
+    {
+      "title": {
+        "en": "Light Vehicles (Car / Motorcycle)",
+        "si": "සැහැල්ලු වාහන (කාර් / යතුරුපැදි)",
+        "ta": "இலகு வாகனங்கள் (கார் / மோட்டார் சைக்கிள்)"
+      },
+      "description": {
+        "en": "Theory for Class B (car) and Class A (motorcycle) licence categories.",
+        "si": "B පන්තිය (කාර්) සහ A පන්තිය (යතුරුපැදි) බලපත්‍ර කාණ්ඩ සඳහා න්‍යාය.",
+        "ta": "B வகுப்பு (கார்) மற்றும் A வகுப்பு (மோட்டார் சைக்கிள்) உரிம வகைகளுக்கான கோட்பாடு."
+      }
+    },
+    {
+      "title": {
+        "en": "Heavy Vehicles & Special Categories",
+        "si": "බර වාහන සහ විශේෂ කාණ්ඩ",
+        "ta": "கனரக வாகனங்கள் & சிறப்பு வகைகள்"
+      },
+      "description": {
+        "en": "Preparation for bus, lorry, and other heavy / special licence classes.",
+        "si": "බස්, ලොරි සහ අනෙකුත් බර / විශේෂ බලපත්‍ර පන්ති සඳහා සූදානම.",
+        "ta": "பேருந்து, லாரி மற்றும் பிற கனரக / சிறப்பு உரிம வகுப்புகளுக்கான தயாரிப்பு."
+      }
+    }
+  ]
+}

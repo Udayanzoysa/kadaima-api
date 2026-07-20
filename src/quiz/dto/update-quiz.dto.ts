@@ -16,6 +16,7 @@ import { Type } from 'class-transformer';
 import { ApiProperty } from '@nestjs/swagger';
 import { ContentLanguage, QuizStatus } from '@prisma/client';
 import { LocalizedTextDto } from './localized-text.dto';
+import { QuizSectionInputDto } from './quiz-section.dto';
 
 export class UpdateQuizDto {
   @ApiProperty({ required: false })
@@ -31,11 +32,23 @@ export class UpdateQuizDto {
   @ApiProperty({
     enum: ContentLanguage,
     required: false,
-    description: 'Single content language for this quiz (no mixing)',
+    description: 'Deprecated: use `languages`. Kept as primary/default language.',
   })
   @IsEnum(ContentLanguage)
   @IsOptional()
   language?: ContentLanguage;
+
+  @ApiProperty({
+    enum: ContentLanguage,
+    isArray: true,
+    required: false,
+    description:
+      'Languages used in this quiz. Title, description, and all questions must include each selected language.',
+  })
+  @IsArray()
+  @IsEnum(ContentLanguage, { each: true })
+  @IsOptional()
+  languages?: ContentLanguage[];
 
   @ApiProperty({ type: LocalizedTextDto, required: false })
   @ValidateNested()
@@ -100,12 +113,22 @@ export class UpdateQuizDto {
   @IsOptional()
   priceLkr?: number | null;
 
-  /** Replace attached questions with these bank IDs (order = sortOrder). */
+  /** Replace attached questions with these bank IDs (order = sortOrder). Ignored when `sections` is set. */
   @ApiProperty({ type: [String], required: false })
   @IsArray()
   @IsUUID('4', { each: true })
   @IsOptional()
   questionIds?: string[];
+
+  /**
+   * Replace instruction blocks + question links.
+   * When provided, clears existing sections/links and recreates from this list.
+   */
+  @ApiProperty({ type: [QuizSectionInputDto], required: false })
+  @ValidateNested({ each: true })
+  @Type(() => QuizSectionInputDto)
+  @IsOptional()
+  sections?: QuizSectionInputDto[];
 }
 
 export class UpdateQuizStatusDto {

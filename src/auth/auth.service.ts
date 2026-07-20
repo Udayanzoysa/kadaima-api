@@ -682,25 +682,26 @@ export class AuthService {
 
   // 2. Primary Login & Step-Up Authentication Routing Matrix
   async login(dto: LoginDto, meta?: AuthRequestMeta) {
-    const user = await this.prisma.user.findUnique({
-      where: { email: dto.email },
+    const email = dto.email.trim().toLowerCase();
+    const user = await this.prisma.user.findFirst({
+      where: { email: { equals: email, mode: 'insensitive' } },
       include: { workspace: true },
     });
 
     if (!user) {
-      this.logLoginFailed(dto.email, meta, 'unknown email');
+      this.logLoginFailed(email, meta, 'unknown email');
       throw new UnauthorizedException('Invalid login credentials.');
     }
 
     if (user.status === 'Inactive') {
-      this.logLoginFailed(dto.email, meta, 'account deactivated');
+      this.logLoginFailed(email, meta, 'account deactivated');
       throw new UnauthorizedException('Your account is deactivated. Please contact support.');
     }
 
     await this.assertTeacherLoginAllowed(user);
 
     if (!user.passwordHash) {
-      this.logLoginFailed(dto.email, meta, 'Google-only account');
+      this.logLoginFailed(email, meta, 'Google-only account');
       throw new UnauthorizedException(
         'This account uses Google sign-in. Continue with Google instead.',
       );
@@ -708,7 +709,7 @@ export class AuthService {
 
     const isPasswordValid = await bcrypt.compare(dto.password, user.passwordHash);
     if (!isPasswordValid) {
-      this.logLoginFailed(dto.email, meta, 'invalid password');
+      this.logLoginFailed(email, meta, 'invalid password');
       throw new UnauthorizedException('Invalid login credentials.');
     }
 

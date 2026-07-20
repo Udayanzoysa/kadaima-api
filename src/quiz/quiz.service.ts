@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { randomUUID } from 'crypto';
+import * as XLSX from 'xlsx';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateQuizDto } from './dto/create-quiz.dto';
 import { UpdateQuizDto } from './dto/update-quiz.dto';
@@ -12,6 +13,7 @@ import {
   AttemptStatus,
   ContentLanguage,
   QuestionStatus,
+  QuestionType,
   QuizStatus,
   Prisma,
   TeacherQuizVisibility,
@@ -22,8 +24,52 @@ import {
   mergeBilling,
   type PaymentMode,
 } from '../settings/notification-config.types';
+import {
+  asLocalized,
+  jsonDownload,
+  parseJsonBuffer,
+  readWorkbook,
+  sheetToRows,
+  xlsxDownload,
+  type Localized as BackupLocalized,
+} from '../common/backup/backup.util';
 
 type Localized = { en: string; si: string; ta: string };
+
+type ExportQuizQuestion = {
+  questionText: BackupLocalized;
+  type: QuestionType;
+  points: number;
+  status: QuestionStatus;
+  imageUrl?: string | null;
+  config?: Record<string, unknown>;
+  choices: Array<{
+    choiceText: BackupLocalized;
+    isCorrect: boolean;
+    imageUrl?: string | null;
+  }>;
+};
+
+type ExportQuiz = {
+  courseTitle: BackupLocalized;
+  moduleTitle?: BackupLocalized | null;
+  languages: ContentLanguage[];
+  title: BackupLocalized;
+  description?: BackupLocalized | null;
+  coverImageUrl?: string | null;
+  durationMinutes: number;
+  passingScorePercentage: number;
+  maxAttempts: number;
+  shuffleQuestions: boolean;
+  requiresUnlock: boolean;
+  priceLkr?: number | null;
+  status: QuizStatus;
+  questions: ExportQuizQuestion[];
+  sections?: Array<{
+    instruction: BackupLocalized;
+    questions: ExportQuizQuestion[];
+  }>;
+};
 
 function toJson(value: Localized): Prisma.InputJsonValue {
   return value as Prisma.InputJsonValue;
@@ -43,12 +89,41 @@ function localeText(text: unknown, language: ContentLanguage): string {
   return plainText(record[language]);
 }
 
-/** Keep only the quiz language filled — enforces one language per quiz. */
-function toMonoLocalized(text: Localized, language: ContentLanguage): Localized {
+const ALL_LANGS: ContentLanguage[] = [
+  ContentLanguage.en,
+  ContentLanguage.si,
+  ContentLanguage.ta,
+];
+
+function normalizeLanguages(
+  languages?: ContentLanguage[] | null,
+  fallback?: ContentLanguage | null,
+): ContentLanguage[] {
+  const raw =
+    languages && languages.length > 0
+      ? languages
+      : fallback
+        ? [fallback]
+        : [ContentLanguage.en];
+  const unique = ALL_LANGS.filter((l) => raw.includes(l));
+  if (!unique.length) {
+    throw new BadRequestException(
+      'Select at least one quiz language (English, Sinhala, or Tamil).',
+    );
+  }
+  return unique;
+}
+
+/** Keep only the selected quiz languages filled. */
+function toLanguagesLocalized(
+  text: Localized,
+  languages: ContentLanguage[],
+): Localized {
+  const set = new Set(languages);
   return {
-    en: language === ContentLanguage.en ? text.en ?? '' : '',
-    si: language === ContentLanguage.si ? text.si ?? '' : '',
-    ta: language === ContentLanguage.ta ? text.ta ?? '' : '',
+    en: set.has(ContentLanguage.en) ? text.en ?? '' : '',
+    si: set.has(ContentLanguage.si) ? text.si ?? '' : '',
+    ta: set.has(ContentLanguage.ta) ? text.ta ?? '' : '',
   };
 }
 
@@ -61,15 +136,26 @@ function assertLocaleContent(
   const value = localeText(text, language);
   if (value.length < minLen) {
     throw new BadRequestException(
-      `${label} must be provided in the quiz language (${language}).`,
+      `${label} must be provided in ${language.toUpperCase()}.`,
     );
   }
 }
 
-async function assertQuestionsMatchLanguage(
+function assertLanguagesContent(
+  text: unknown,
+  languages: ContentLanguage[],
+  label: string,
+  minLen = 1,
+) {
+  for (const language of languages) {
+    assertLocaleContent(text, language, label, minLen);
+  }
+}
+
+async function assertQuestionsMatchLanguages(
   tx: Prisma.TransactionClient,
   questionIds: string[],
-  language: ContentLanguage,
+  languages: ContentLanguage[],
 ) {
   for (const questionId of questionIds) {
     const question = await tx.question.findUnique({
@@ -79,10 +165,12 @@ async function assertQuestionsMatchLanguage(
     if (!question) {
       throw new BadRequestException(`Question not found: ${questionId}`);
     }
-    assertLocaleContent(question.questionText, language, 'Question text', 3);
+    assertLanguagesContent(question.questionText, languages, 'Question text', 3);
     if (question.type === 'MCQ' || question.type === 'SEQUENCE') {
       for (const choice of question.choices) {
-        assertLocaleContent(choice.choiceText, language, 'Answer choice', 1);
+        // Image-only choices are allowed; otherwise require text in every quiz language.
+        if (choice.imageUrl) continue;
+        assertLanguagesContent(choice.choiceText, languages, 'Answer choice', 1);
       }
     }
   }
@@ -109,6 +197,7 @@ const questionSelect = (revealAnswers: boolean) => ({
     select: {
       id: true,
       choiceText: true,
+      imageUrl: true,
       isCorrect: revealAnswers,
     },
   },
@@ -239,11 +328,12 @@ export class QuizService {
     return { deleted, archived, total: quizzes.length };
   }
 
-  /** Shape quizQuestions into a flat `questions` array for API consumers. */
+  /** Shape quizQuestions into a flat `questions` array + optional `sections` for API consumers. */
   private mapQuizWithQuestions<
     T extends {
       quizQuestions: Array<{
         sortOrder: number;
+        sectionId?: string | null;
         question: {
           id: string;
           questionText: unknown;
@@ -255,10 +345,15 @@ export class QuizService {
           choices: unknown[];
         };
       }>;
+      sections?: Array<{
+        id: string;
+        instruction: unknown;
+        sortOrder: number;
+      }>;
     },
   >(quiz: T, opts?: { revealAnswers?: boolean }) {
     const reveal = opts?.revealAnswers ?? true;
-    const { quizQuestions, ...rest } = quiz;
+    const { quizQuestions, sections: sectionRows, ...rest } = quiz;
     const questions = [...quizQuestions]
       .sort((a, b) => a.sortOrder - b.sortOrder)
       .map((link) => ({
@@ -267,22 +362,47 @@ export class QuizService {
           ? link.question.config ?? {}
           : publicQuestionConfig(link.question.config),
         sortOrder: link.sortOrder,
+        sectionId: link.sectionId ?? null,
       }));
-    return { ...rest, questions, _count: { questions: questions.length } };
+
+    const sections = [...(sectionRows ?? [])]
+      .sort((a, b) => a.sortOrder - b.sortOrder)
+      .map((section) => ({
+        id: section.id,
+        instruction: section.instruction,
+        sortOrder: section.sortOrder,
+        questions: questions.filter((q) => q.sectionId === section.id),
+      }));
+
+    return {
+      ...rest,
+      questions,
+      sections,
+      _count: { questions: questions.length },
+    };
+  }
+
+  private quizDetailInclude(revealAnswers: boolean) {
+    return {
+      course: true,
+      module: { select: { id: true, title: true, courseId: true } },
+      sections: { orderBy: { sortOrder: 'asc' as const } },
+      quizQuestions: {
+        orderBy: { sortOrder: 'asc' as const },
+        include: {
+          question: revealAnswers
+            ? { include: { choices: true } }
+            : { select: questionSelect(false) },
+        },
+      },
+      _count: { select: { attempts: true } },
+    };
   }
 
   async getQuizById(id: string) {
     const quiz = await this.prisma.quiz.findUnique({
       where: { id },
-      include: {
-        course: true,
-        module: { select: { id: true, title: true, courseId: true } },
-        quizQuestions: {
-          orderBy: { sortOrder: 'asc' },
-          include: { question: { include: { choices: true } } },
-        },
-        _count: { select: { attempts: true } },
-      },
+      include: this.quizDetailInclude(true),
     });
     if (!quiz) throw new NotFoundException('Quiz not found');
     const mapped = this.mapQuizWithQuestions(quiz);
@@ -293,10 +413,132 @@ export class QuizService {
   }
 
   /** Public catalog — published quizzes only, no question content. */
+  /** Flatten localized JSON title for case-insensitive contains search. */
+  private localizedSearchBlob(value: unknown): string {
+    if (!value) return '';
+    if (typeof value === 'string') return value.toLowerCase();
+    if (typeof value === 'object') {
+      const o = value as Record<string, unknown>;
+      return [o.en, o.si, o.ta]
+        .filter((v) => typeof v === 'string')
+        .join(' ')
+        .toLowerCase();
+    }
+    return '';
+  }
+
+  /**
+   * Searchable catalog index for the public home sidebar.
+   * Courses + modules with quiz counts and pre-normalized search text (en/si/ta).
+   */
+  async getPublishedCatalogIndex() {
+    const quizzes = await this.prisma.quiz.findMany({
+      where: { status: QuizStatus.Published },
+      select: {
+        course: { select: { id: true, title: true } },
+        module: { select: { id: true, title: true } },
+      },
+    });
+
+    type ModAcc = {
+      id: string;
+      title: unknown;
+      quizCount: number;
+      searchText: string;
+    };
+    type CourseAcc = {
+      id: string;
+      title: unknown;
+      quizCount: number;
+      searchText: string;
+      modules: Map<string, ModAcc>;
+    };
+
+    const courses = new Map<string, CourseAcc>();
+
+    for (const q of quizzes) {
+      let course = courses.get(q.course.id);
+      if (!course) {
+        course = {
+          id: q.course.id,
+          title: q.course.title,
+          quizCount: 0,
+          searchText: this.localizedSearchBlob(q.course.title),
+          modules: new Map(),
+        };
+        courses.set(q.course.id, course);
+      }
+      course.quizCount += 1;
+
+      if (q.module?.id) {
+        let mod = course.modules.get(q.module.id);
+        if (!mod) {
+          mod = {
+            id: q.module.id,
+            title: q.module.title,
+            quizCount: 0,
+            searchText: this.localizedSearchBlob(q.module.title),
+          };
+          course.modules.set(q.module.id, mod);
+        }
+        mod.quizCount += 1;
+      }
+    }
+
+    const courseList = Array.from(courses.values()).map((c) => ({
+      id: c.id,
+      title: c.title,
+      quizCount: c.quizCount,
+      searchText: c.searchText,
+      modules: Array.from(c.modules.values()).map((m) => ({
+        id: m.id,
+        title: m.title,
+        quizCount: m.quizCount,
+        searchText: m.searchText,
+      })),
+    }));
+
+    /** Flat entries for client-side indexed search (course + module names). */
+    const entries: Array<{
+      type: 'course' | 'module';
+      id: string;
+      courseId: string;
+      moduleId?: string;
+      title: unknown;
+      quizCount: number;
+      searchText: string;
+    }> = [];
+
+    for (const c of courseList) {
+      entries.push({
+        type: 'course',
+        id: c.id,
+        courseId: c.id,
+        title: c.title,
+        quizCount: c.quizCount,
+        searchText: c.searchText,
+      });
+      for (const m of c.modules) {
+        entries.push({
+          type: 'module',
+          id: m.id,
+          courseId: c.id,
+          moduleId: m.id,
+          title: m.title,
+          quizCount: m.quizCount,
+          searchText: `${c.searchText} ${m.searchText}`.trim(),
+        });
+      }
+    }
+
+    return { courses: courseList, entries };
+  }
+
   async listPublishedQuizzes(
     guestSessionId?: string,
     userId?: string,
     teacherSlug?: string,
+    filters?: { courseId?: string; moduleId?: string; q?: string },
   ) {
     const slug = teacherSlug?.trim().toLowerCase();
     let teacherQuizFilter: { id?: { in: string[] } } = {};
@@ -319,6 +561,10 @@ export class QuizService {
       }
     }
 
+    const courseId = filters?.courseId?.trim();
+    const moduleId = filters?.moduleId?.trim();
+    const q = filters?.q?.trim().toLowerCase();
+
     const quizzes = await this.prisma.quiz.findMany({
       where: {
         status: QuizStatus.Published,
@@ -330,6 +576,8 @@ export class QuizService {
               },
             }
           : {}),
+        ...(courseId ? { courseId } : {}),
+        ...(moduleId ? { moduleId } : {}),
       },
       orderBy: { createdAt: 'desc' },
       select: {
@@ -356,8 +604,19 @@ export class QuizService {
       },
     });
 
+    const filtered = q
+      ? quizzes.filter((quiz) => {
+          const blob = [
+            this.localizedSearchBlob(quiz.title),
+            this.localizedSearchBlob(quiz.course.title),
+            this.localizedSearchBlob(quiz.module?.title),
+          ].join(' ');
+          return blob.includes(q);
+        })
+      : quizzes;
+
     const unlockedIds = new Set<string>();
-    const quizIds = quizzes.map((q) => q.id);
+    const quizIds = filtered.map((quiz) => quiz.id);
     const paymentMode = await this.getPaymentMode();
     const hasSub = userId ? await this.hasActiveSubscription(userId) : false;
 
@@ -376,22 +635,22 @@ export class QuizService {
       unlocks.forEach((u) => unlockedIds.add(u.quizId));
     }
 
-    return quizzes.map((q) => {
-      const priceLkr = q.priceLkr != null ? Number(q.priceLkr) : null;
+    return filtered.map((quiz) => {
+      const priceLkr = quiz.priceLkr != null ? Number(quiz.priceLkr) : null;
       return {
-        ...q,
+        ...quiz,
         priceLkr,
-        unlocked: q.requiresUnlock
+        unlocked: quiz.requiresUnlock
           ? this.resolveUnlocked({
               paymentMode,
               hasSub,
-              hasDirectUnlock: unlockedIds.has(q.id),
+              hasDirectUnlock: unlockedIds.has(quiz.id),
               priceLkr,
             })
           : true,
         _count: {
-          questions: q._count.quizQuestions,
-          attempts: q._count.attempts,
+          questions: quiz._count.quizQuestions,
+          attempts: quiz._count.attempts,
         },
       };
     });
@@ -533,6 +792,7 @@ export class QuizService {
       include: {
         course: { select: { id: true, title: true } },
         module: { select: { id: true, title: true } },
+        sections: { orderBy: { sortOrder: 'asc' } },
         quizQuestions: {
           orderBy: { sortOrder: 'asc' },
           where: { question: { status: QuestionStatus.Published } },
@@ -562,6 +822,10 @@ export class QuizService {
     };
   }
 
+  /**
+   * When shuffle is on, shuffle within each section (and within ungrouped),
+   * keeping section order fixed. Returns null when shuffle is off (use DB sortOrder).
+   */
   private async resolveQuestionOrder(
     quizId: string,
     shuffle: boolean,
@@ -572,11 +836,91 @@ export class QuizService {
         question: { status: { not: QuestionStatus.Archived } },
       },
       orderBy: { sortOrder: 'asc' },
-      select: { questionId: true },
+      select: { questionId: true, sectionId: true },
     });
-    const ids = links.map((l) => l.questionId);
-    if (!ids.length) return [];
-    return shuffle ? shuffleIds(ids) : null;
+    if (!links.length) return [];
+    if (!shuffle) return null;
+
+    const sections = await this.prisma.quizSection.findMany({
+      where: { quizId },
+      orderBy: { sortOrder: 'asc' },
+      select: { id: true },
+    });
+
+    const ordered: string[] = [];
+    const ungrouped = links.filter((l) => !l.sectionId).map((l) => l.questionId);
+    if (ungrouped.length) {
+      ordered.push(...shuffleIds(ungrouped));
+    }
+    for (const section of sections) {
+      const ids = links
+        .filter((l) => l.sectionId === section.id)
+        .map((l) => l.questionId);
+      if (ids.length) ordered.push(...shuffleIds(ids));
+    }
+    return ordered;
+  }
+
+  /** Replace quiz sections + question links from a sections payload. */
+  private async replaceQuizSections(
+    tx: Prisma.TransactionClient,
+    quizId: string,
+    sections: Array<{ instruction: Localized; questionIds: string[] }>,
+    languages: ContentLanguage[],
+  ) {
+    if (sections.length === 0) {
+      throw new BadRequestException('Add at least one instruction section with questions.');
+    }
+
+    const allIds: string[] = [];
+    for (let i = 0; i < sections.length; i += 1) {
+      const section = sections[i];
+      assertLanguagesContent(
+        section.instruction,
+        languages,
+        `Section ${i + 1} instruction`,
+        1,
+      );
+      if (!section.questionIds?.length) {
+        throw new BadRequestException(
+          `Section ${i + 1} must include at least one question.`,
+        );
+      }
+      allIds.push(...section.questionIds);
+    }
+
+    const unique = new Set(allIds);
+    if (unique.size !== allIds.length) {
+      throw new BadRequestException('Each question may only appear in one section.');
+    }
+
+    await assertQuestionsMatchLanguages(tx, allIds, languages);
+
+    await tx.quizQuestion.deleteMany({ where: { quizId } });
+    await tx.quizSection.deleteMany({ where: { quizId } });
+
+    let sortOrder = 0;
+    for (let i = 0; i < sections.length; i += 1) {
+      const section = sections[i];
+      const created = await tx.quizSection.create({
+        data: {
+          quizId,
+          instruction: toJson(toLanguagesLocalized(section.instruction, languages)),
+          sortOrder: i,
+        },
+      });
+      for (const questionId of section.questionIds) {
+        await tx.quizQuestion.create({
+          data: {
+            quizId,
+            questionId,
+            sectionId: created.id,
+            sortOrder,
+          },
+        });
+        sortOrder += 1;
+      }
+    }
   }
 
   /**
@@ -953,21 +1297,29 @@ export class QuizService {
 
   async createQuiz(dto: CreateQuizDto, userId: string) {
     const inline = dto.questions ?? [];
-    const bankIds = dto.questionIds ?? [];
+    const useSections = Array.isArray(dto.sections) && dto.sections.length > 0;
+    const bankIds = useSections
+      ? dto.sections!.flatMap((s) => s.questionIds)
+      : (dto.questionIds ?? []);
     if (inline.length === 0 && bankIds.length === 0) {
       throw new BadRequestException('Add at least one question or attach bank questions.');
     }
 
-    const language = dto.language ?? ContentLanguage.en;
-    assertLocaleContent(dto.title, language, 'Quiz title', 3);
+    const languages = normalizeLanguages(
+      dto.languages,
+      dto.language ?? ContentLanguage.en,
+    );
+    const language = languages[0];
+    assertLanguagesContent(dto.title, languages, 'Quiz title', 3);
     if (dto.description) {
-      assertLocaleContent(dto.description, language, 'Quiz description', 10);
+      assertLanguagesContent(dto.description, languages, 'Quiz description', 10);
     }
 
     for (const question of inline) {
-      assertLocaleContent(question.questionText, language, 'Question text', 3);
+      assertLanguagesContent(question.questionText, languages, 'Question text', 3);
       for (const choice of question.choices ?? []) {
-        assertLocaleContent(choice.choiceText, language, 'Answer choice', 1);
+        if (choice.imageUrl) continue;
+        assertLanguagesContent(choice.choiceText, languages, 'Answer choice', 1);
       }
     }
 
@@ -983,18 +1335,15 @@ export class QuizService {
     }
 
     const createdQuizId = await this.prisma.$transaction(async (tx) => {
-      if (bankIds.length > 0) {
-        await assertQuestionsMatchLanguage(tx, bankIds, language);
-      }
-
       const quiz = await tx.quiz.create({
         data: {
           courseId: dto.courseId,
           moduleId: dto.moduleId ?? undefined,
           language,
-          title: toJson(toMonoLocalized(dto.title, language)),
+          languages,
+          title: toJson(toLanguagesLocalized(dto.title, languages)),
           description: dto.description
-            ? toJson(toMonoLocalized(dto.description, language))
+            ? toJson(toLanguagesLocalized(dto.description, languages))
             : undefined,
           coverImageUrl: dto.coverImageUrl ?? undefined,
           durationMinutes: dto.durationMinutes,
@@ -1008,12 +1357,23 @@ export class QuizService {
         },
       });
 
+      if (useSections) {
+        await this.replaceQuizSections(tx, quiz.id, dto.sections!, languages);
+        return quiz.id;
+      }
+
+      if (bankIds.length > 0) {
+        await assertQuestionsMatchLanguages(tx, bankIds, languages);
+      }
+
       let sortOrder = 0;
 
       for (const question of inline) {
         const created = await tx.question.create({
           data: {
-            questionText: toJson(toMonoLocalized(question.questionText, language)),
+            questionText: toJson(
+              toLanguagesLocalized(question.questionText, languages),
+            ),
             type: question.type,
             points: question.points ?? 1,
             status:
@@ -1022,8 +1382,11 @@ export class QuizService {
                 : QuestionStatus.Draft,
             createdById: userId,
             choices: {
-              create: question.choices.map((choice) => ({
-                choiceText: toJson(toMonoLocalized(choice.choiceText, language)),
+              create: (question.choices ?? []).map((choice) => ({
+                choiceText: toJson(
+                  toLanguagesLocalized(choice.choiceText, languages),
+                ),
+                imageUrl: choice.imageUrl ?? null,
                 isCorrect: choice.isCorrect,
               })),
             },
@@ -1060,13 +1423,19 @@ export class QuizService {
     const existing = await this.prisma.quiz.findUnique({ where: { id } });
     if (!existing) throw new NotFoundException('Quiz not found');
 
-    const language = dto.language ?? existing.language;
+    const languages = normalizeLanguages(
+      dto.languages ??
+        (dto.language !== undefined ? [dto.language] : undefined) ??
+        existing.languages,
+      dto.language ?? existing.language,
+    );
+    const language = languages[0];
 
     if (dto.title) {
-      assertLocaleContent(dto.title, language, 'Quiz title', 3);
+      assertLanguagesContent(dto.title, languages, 'Quiz title', 3);
     }
     if (dto.description) {
-      assertLocaleContent(dto.description, language, 'Quiz description', 10);
+      assertLanguagesContent(dto.description, languages, 'Quiz description', 10);
     }
 
     const nextRequires =
@@ -1093,42 +1462,49 @@ export class QuizService {
     }
 
     await this.prisma.$transaction(async (tx) => {
-      const languageChanged =
-        dto.language !== undefined && dto.language !== existing.language;
-      const questionsChanging = dto.questionIds !== undefined;
+      const prevLanguages = normalizeLanguages(
+        existing.languages,
+        existing.language,
+      );
+      const languagesChanged =
+        languages.length !== prevLanguages.length ||
+        languages.some((l, i) => l !== prevLanguages[i]);
+      const sectionsChanging = dto.sections !== undefined;
+      const questionsChanging = dto.questionIds !== undefined || sectionsChanging;
 
-      if (languageChanged || questionsChanging) {
-        const questionIds =
-          dto.questionIds ??
-          (
-            await tx.quizQuestion.findMany({
-              where: { quizId: id },
-              orderBy: { sortOrder: 'asc' },
-              select: { questionId: true },
-            })
-          ).map((link) => link.questionId);
+      if (languagesChanged || questionsChanging) {
+        const questionIds = sectionsChanging
+          ? (dto.sections ?? []).flatMap((s) => s.questionIds)
+          : dto.questionIds ??
+            (
+              await tx.quizQuestion.findMany({
+                where: { quizId: id },
+                orderBy: { sortOrder: 'asc' },
+                select: { questionId: true },
+              })
+            ).map((link) => link.questionId);
 
-        if (questionIds.length > 0) {
-          await assertQuestionsMatchLanguage(tx, questionIds, language);
+        if (questionIds.length > 0 && !sectionsChanging) {
+          await assertQuestionsMatchLanguages(tx, questionIds, languages);
         }
       }
 
       const nextTitle = dto.title
-        ? toMonoLocalized(dto.title, language)
-        : languageChanged
-          ? toMonoLocalized(existing.title as Localized, language)
+        ? toLanguagesLocalized(dto.title, languages)
+        : languagesChanged
+          ? toLanguagesLocalized(existing.title as Localized, languages)
           : undefined;
       const nextDescription = dto.description
-        ? toMonoLocalized(dto.description, language)
-        : languageChanged && existing.description
-          ? toMonoLocalized(existing.description as Localized, language)
+        ? toLanguagesLocalized(dto.description, languages)
+        : languagesChanged && existing.description
+          ? toLanguagesLocalized(existing.description as Localized, languages)
           : undefined;
 
       if (nextTitle) {
-        assertLocaleContent(nextTitle, language, 'Quiz title', 3);
+        assertLanguagesContent(nextTitle, languages, 'Quiz title', 3);
       }
       if (nextDescription) {
-        assertLocaleContent(nextDescription, language, 'Quiz description', 10);
+        assertLanguagesContent(nextDescription, languages, 'Quiz description', 10);
       }
 
       await tx.quiz.update({
@@ -1141,7 +1517,8 @@ export class QuizService {
               : dto.moduleId === null
                 ? null
                 : dto.moduleId,
-          language: dto.language,
+          language,
+          languages,
           title: nextTitle ? toJson(nextTitle) : undefined,
           description:
             nextDescription !== undefined ? toJson(nextDescription) : undefined,
@@ -1162,8 +1539,11 @@ export class QuizService {
         },
       });
 
-      if (dto.questionIds) {
+      if (dto.sections !== undefined) {
+        await this.replaceQuizSections(tx, id, dto.sections, languages);
+      } else if (dto.questionIds) {
         await tx.quizQuestion.deleteMany({ where: { quizId: id } });
+        await tx.quizSection.deleteMany({ where: { quizId: id } });
         for (let i = 0; i < dto.questionIds.length; i += 1) {
           const questionId = dto.questionIds[i];
           await tx.quizQuestion.create({
@@ -1459,6 +1839,7 @@ export class QuizService {
       where: { id: attempt.quizId },
       include: {
         course: true,
+        sections: { orderBy: { sortOrder: 'asc' } },
         quizQuestions: {
           orderBy: { sortOrder: 'asc' },
           include: {
@@ -1482,8 +1863,496 @@ export class QuizService {
           return q ? { ...q, sortOrder: index } : null;
         })
         .filter(Boolean) as typeof mapped.questions;
+
+      if (mapped.sections?.length) {
+        mapped.sections = mapped.sections.map((section) => ({
+          ...section,
+          questions: mapped.questions.filter((q) => q.sectionId === section.id),
+        }));
+      }
     }
 
     return { ...attempt, quiz: mapped };
+  }
+
+  private toExportQuestion(question: {
+    questionText: unknown;
+    type: QuestionType;
+    points: number;
+    status?: QuestionStatus;
+    imageUrl?: string | null;
+    config?: unknown;
+    choices: Array<{
+      choiceText: unknown;
+      isCorrect: boolean;
+      imageUrl?: string | null;
+    }>;
+  }): ExportQuizQuestion {
+    return {
+      questionText: asLocalized(question.questionText),
+      type: question.type,
+      points: question.points,
+      status: question.status ?? QuestionStatus.Draft,
+      imageUrl: question.imageUrl ?? null,
+      config:
+        question.config && typeof question.config === 'object'
+          ? (question.config as Record<string, unknown>)
+          : {},
+      choices: (question.choices ?? []).map((c) => ({
+        choiceText: asLocalized(c.choiceText),
+        isCorrect: Boolean(c.isCorrect),
+        imageUrl: c.imageUrl ?? null,
+      })),
+    };
+  }
+
+  private titleKey(title: unknown): string {
+    return asLocalized(title).en.trim().toLowerCase();
+  }
+
+  private async resolveCourseIdByTitle(title: BackupLocalized): Promise<string> {
+    const key = title.en.trim().toLowerCase();
+    if (!key) throw new BadRequestException('courseTitle.en is required');
+    const courses = await this.prisma.course.findMany({
+      select: { id: true, title: true },
+    });
+    const match = courses.find((c) => this.titleKey(c.title) === key);
+    if (!match) {
+      throw new BadRequestException(
+        `Course not found for title "${title.en}". Import or create the course first.`,
+      );
+    }
+    return match.id;
+  }
+
+  private async resolveModuleIdByTitle(
+    courseId: string,
+    title?: BackupLocalized | null,
+  ): Promise<string | null> {
+    if (!title?.en?.trim()) return null;
+    const key = title.en.trim().toLowerCase();
+    const modules = await this.prisma.module.findMany({
+      where: { courseId },
+      select: { id: true, title: true },
+    });
+    const match = modules.find((m) => this.titleKey(m.title) === key);
+    if (!match) {
+      throw new BadRequestException(
+        `Module not found for title "${title.en}" under the selected course.`,
+      );
+    }
+    return match.id;
+  }
+
+  async exportBackup(format: 'json' | 'xlsx' = 'json') {
+    const rows = await this.prisma.quiz.findMany({
+      orderBy: { createdAt: 'asc' },
+      include: {
+        course: { select: { title: true } },
+        module: { select: { title: true } },
+        sections: { orderBy: { sortOrder: 'asc' } },
+        quizQuestions: {
+          orderBy: { sortOrder: 'asc' },
+          include: { question: { include: { choices: true } } },
+        },
+      },
+    });
+
+    const payload: ExportQuiz[] = rows.map((quiz) => {
+      const flatQuestions = [...quiz.quizQuestions]
+        .sort((a, b) => a.sortOrder - b.sortOrder)
+        .map((link) => this.toExportQuestion(link.question));
+
+      const sections =
+        quiz.sections.length > 0
+          ? quiz.sections.map((section) => ({
+              instruction: asLocalized(section.instruction),
+              questions: quiz.quizQuestions
+                .filter((link) => link.sectionId === section.id)
+                .sort((a, b) => a.sortOrder - b.sortOrder)
+                .map((link) => this.toExportQuestion(link.question)),
+            }))
+          : undefined;
+
+      return {
+        courseTitle: asLocalized(quiz.course.title),
+        moduleTitle: quiz.module ? asLocalized(quiz.module.title) : null,
+        languages: (quiz.languages?.length
+          ? quiz.languages
+          : [quiz.language]) as ContentLanguage[],
+        title: asLocalized(quiz.title),
+        description: quiz.description ? asLocalized(quiz.description) : null,
+        coverImageUrl: quiz.coverImageUrl,
+        durationMinutes: quiz.durationMinutes,
+        passingScorePercentage: quiz.passingScorePercentage,
+        maxAttempts: quiz.maxAttempts,
+        shuffleQuestions: quiz.shuffleQuestions,
+        requiresUnlock: quiz.requiresUnlock,
+        priceLkr: quiz.priceLkr != null ? Number(quiz.priceLkr) : null,
+        status: quiz.status,
+        questions: flatQuestions,
+        sections,
+      };
+    });
+
+    const stamp = new Date().toISOString().slice(0, 10);
+
+    if (format === 'xlsx') {
+      const quizRows = payload.map((q, index) => ({
+        quiz_index: index + 1,
+        course_title_en: q.courseTitle.en,
+        course_title_si: q.courseTitle.si,
+        course_title_ta: q.courseTitle.ta,
+        module_title_en: q.moduleTitle?.en ?? '',
+        module_title_si: q.moduleTitle?.si ?? '',
+        module_title_ta: q.moduleTitle?.ta ?? '',
+        title_en: q.title.en,
+        title_si: q.title.si,
+        title_ta: q.title.ta,
+        description_en: q.description?.en ?? '',
+        description_si: q.description?.si ?? '',
+        description_ta: q.description?.ta ?? '',
+        languages: q.languages.join(','),
+        duration_minutes: q.durationMinutes,
+        passing_score: q.passingScorePercentage,
+        max_attempts: q.maxAttempts,
+        shuffle_questions: q.shuffleQuestions ? 'true' : 'false',
+        requires_unlock: q.requiresUnlock ? 'true' : 'false',
+        price_lkr: q.priceLkr ?? '',
+        status: q.status,
+        cover_image_url: q.coverImageUrl ?? '',
+      }));
+
+      const questionRows = payload.flatMap((q, index) =>
+        q.questions.map((question, qi) => {
+          const row: Record<string, string | number> = {
+            quiz_index: index + 1,
+            question_index: qi + 1,
+            question_en: question.questionText.en,
+            question_si: question.questionText.si,
+            question_ta: question.questionText.ta,
+            type: question.type,
+            points: question.points,
+            status: question.status,
+            correct: '',
+          };
+          const letters = ['a', 'b', 'c', 'd', 'e', 'f'];
+          letters.forEach((letter, i) => {
+            const choice = question.choices[i];
+            row[`option_${letter}`] = choice?.choiceText.en ?? '';
+            row[`option_${letter}_si`] = choice?.choiceText.si ?? '';
+            row[`option_${letter}_ta`] = choice?.choiceText.ta ?? '';
+          });
+          if (question.type === QuestionType.MCQ) {
+            const correctIndex = question.choices.findIndex((c) => c.isCorrect);
+            if (correctIndex >= 0 && correctIndex < letters.length) {
+              row.correct = letters[correctIndex].toUpperCase();
+            }
+          }
+          return row;
+        }),
+      );
+
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(
+        workbook,
+        XLSX.utils.json_to_sheet(quizRows),
+        'Quizzes',
+      );
+      XLSX.utils.book_append_sheet(
+        workbook,
+        XLSX.utils.json_to_sheet(questionRows),
+        'Questions',
+      );
+      return xlsxDownload(workbook, `quizzes-backup-${stamp}.xlsx`);
+    }
+
+    return jsonDownload(
+      {
+        version: 1,
+        type: 'quizzes',
+        exportedAt: new Date().toISOString(),
+        count: payload.length,
+        quizzes: payload,
+      },
+      `quizzes-backup-${stamp}.json`,
+    );
+  }
+
+  private parseImportQuizzes(raw: unknown): ExportQuiz[] {
+    if (Array.isArray(raw)) return raw as ExportQuiz[];
+    if (raw && typeof raw === 'object') {
+      const obj = raw as Record<string, unknown>;
+      if (Array.isArray(obj.quizzes)) return obj.quizzes as ExportQuiz[];
+    }
+    throw new BadRequestException(
+      'Invalid backup file. Expected { type: "quizzes", quizzes: [...] } or an array.',
+    );
+  }
+
+  private parseQuizzesFromExcel(buffer: Buffer): ExportQuiz[] {
+    const workbook = readWorkbook(buffer);
+    const quizSheet =
+      workbook.Sheets.Quizzes || workbook.Sheets[workbook.SheetNames[0]];
+    if (!quizSheet) throw new BadRequestException('Excel file has no Quizzes sheet');
+    const quizRows = sheetToRows(quizSheet);
+    const questionSheet = workbook.Sheets.Questions;
+    const questionRows = questionSheet ? sheetToRows(questionSheet) : [];
+
+    return quizRows.map((row, i) => {
+      const quizIndex = Number(row.quiz_index) || i + 1;
+      const title = asLocalized({
+        en: row.title_en || row.title || '',
+        si: row.title_si || '',
+        ta: row.title_ta || '',
+      });
+      if (!title.en.trim()) {
+        throw new BadRequestException(`Quiz row ${i + 2}: title_en is required`);
+      }
+
+      const courseTitle = asLocalized({
+        en: row.course_title_en || '',
+        si: row.course_title_si || '',
+        ta: row.course_title_ta || '',
+      });
+      if (!courseTitle.en.trim()) {
+        throw new BadRequestException(`Quiz row ${i + 2}: course_title_en is required`);
+      }
+
+      const statusRaw = row.status || QuizStatus.Draft;
+      if (!Object.values(QuizStatus).includes(statusRaw as QuizStatus)) {
+        throw new BadRequestException(`Quiz row ${i + 2}: invalid status`);
+      }
+
+      const languages = (row.languages || 'en')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean) as ContentLanguage[];
+
+      const questions = questionRows
+        .filter((q) => Number(q.quiz_index) === quizIndex)
+        .map((q, qi) => {
+          const questionText = asLocalized({
+            en: q.question_en || q.question || '',
+            si: q.question_si || '',
+            ta: q.question_ta || '',
+          });
+          if (!questionText.en.trim()) {
+            throw new BadRequestException(
+              `Question for quiz ${quizIndex} row ${qi + 2}: question_en is required`,
+            );
+          }
+          const typeRaw = (q.type || 'MCQ').toUpperCase();
+          if (!Object.values(QuestionType).includes(typeRaw as QuestionType)) {
+            throw new BadRequestException(
+              `Question for quiz ${quizIndex}: invalid type "${q.type}"`,
+            );
+          }
+          const letters = ['a', 'b', 'c', 'd', 'e', 'f'];
+          const correctLetter = (q.correct || '').trim().toLowerCase();
+          const choices = letters
+            .map((letter) => {
+              const en = q[`option_${letter}`] || '';
+              if (!en.trim()) return null;
+              return {
+                choiceText: asLocalized({
+                  en,
+                  si: q[`option_${letter}_si`] || '',
+                  ta: q[`option_${letter}_ta`] || '',
+                }),
+                isCorrect: correctLetter === letter,
+              };
+            })
+            .filter(Boolean) as ExportQuizQuestion['choices'];
+
+          return {
+            questionText,
+            type: typeRaw as QuestionType,
+            points: Math.max(1, Number(q.points) || 1),
+            status: (q.status as QuestionStatus) || QuestionStatus.Draft,
+            imageUrl: null,
+            config: {},
+            choices,
+          };
+        });
+
+      return {
+        courseTitle,
+        moduleTitle: row.module_title_en
+          ? asLocalized({
+              en: row.module_title_en,
+              si: row.module_title_si || '',
+              ta: row.module_title_ta || '',
+            })
+          : null,
+        languages: languages.length ? languages : [ContentLanguage.en],
+        title,
+        description: asLocalized({
+          en: row.description_en || '',
+          si: row.description_si || '',
+          ta: row.description_ta || '',
+        }),
+        coverImageUrl: row.cover_image_url || null,
+        durationMinutes: Math.max(5, Number(row.duration_minutes) || 30),
+        passingScorePercentage: Math.min(
+          100,
+          Math.max(1, Number(row.passing_score) || 70),
+        ),
+        maxAttempts: Math.max(1, Number(row.max_attempts) || 1),
+        shuffleQuestions: String(row.shuffle_questions).toLowerCase() === 'true',
+        requiresUnlock: String(row.requires_unlock).toLowerCase() === 'true',
+        priceLkr: row.price_lkr ? Number(row.price_lkr) : null,
+        status: statusRaw as QuizStatus,
+        questions,
+      };
+    });
+  }
+
+  async importBackup(file: Express.Multer.File, userId: string) {
+    if (!file?.buffer?.length) {
+      throw new BadRequestException('Backup file is required');
+    }
+
+    const name = (file.originalname || '').toLowerCase();
+    let items: ExportQuiz[] = [];
+
+    if (name.endsWith('.json') || file.mimetype === 'application/json') {
+      items = this.parseImportQuizzes(parseJsonBuffer(file.buffer));
+    } else if (name.endsWith('.xlsx') || name.endsWith('.xls')) {
+      items = this.parseQuizzesFromExcel(file.buffer);
+    } else {
+      throw new BadRequestException('Supported formats: .json, .xlsx');
+    }
+
+    if (!items.length) {
+      throw new BadRequestException('No quizzes found in backup file');
+    }
+
+    let created = 0;
+    const failures: string[] = [];
+
+    for (let i = 0; i < items.length; i += 1) {
+      const item = items[i];
+      try {
+        const courseId = await this.resolveCourseIdByTitle(
+          asLocalized(item.courseTitle),
+        );
+        const moduleId = await this.resolveModuleIdByTitle(
+          courseId,
+          item.moduleTitle ? asLocalized(item.moduleTitle) : null,
+        );
+
+        const languages = (item.languages?.length
+          ? item.languages
+          : [ContentLanguage.en]) as ContentLanguage[];
+
+        const sectionPayload =
+          Array.isArray(item.sections) && item.sections.length > 0
+            ? item.sections
+            : null;
+
+        if (sectionPayload) {
+          const sections: Array<{ instruction: Localized; questionIds: string[] }> =
+            [];
+          for (const section of sectionPayload) {
+            const questionIds: string[] = [];
+            for (const q of section.questions ?? []) {
+              const createdQ = await this.prisma.question.create({
+                data: {
+                  questionText: toJson(asLocalized(q.questionText)),
+                  type: q.type ?? QuestionType.MCQ,
+                  points: q.points ?? 1,
+                  status: q.status ?? QuestionStatus.Draft,
+                  imageUrl: q.imageUrl ?? null,
+                  config: (q.config ?? {}) as Prisma.InputJsonValue,
+                  createdById: userId,
+                  choices: {
+                    create: (q.choices ?? []).map((c) => ({
+                      choiceText: toJson(asLocalized(c.choiceText)),
+                      isCorrect: Boolean(c.isCorrect),
+                      imageUrl: c.imageUrl ?? null,
+                    })),
+                  },
+                },
+              });
+              questionIds.push(createdQ.id);
+            }
+            if (!questionIds.length) {
+              throw new BadRequestException('Section has no questions');
+            }
+            sections.push({
+              instruction: asLocalized(section.instruction),
+              questionIds,
+            });
+          }
+
+          const dto: CreateQuizDto = {
+            courseId,
+            moduleId,
+            languages,
+            language: languages[0],
+            title: asLocalized(item.title),
+            description: item.description
+              ? asLocalized(item.description)
+              : undefined,
+            coverImageUrl: item.coverImageUrl ?? null,
+            durationMinutes: item.durationMinutes ?? 30,
+            passingScorePercentage: item.passingScorePercentage ?? 70,
+            maxAttempts: item.maxAttempts ?? 1,
+            shuffleQuestions: Boolean(item.shuffleQuestions),
+            requiresUnlock: Boolean(item.requiresUnlock),
+            priceLkr: item.priceLkr ?? null,
+            status: item.status ?? QuizStatus.Draft,
+            sections,
+          };
+          await this.createQuiz(dto, userId);
+        } else {
+          const questions = item.questions ?? [];
+          if (!questions.length) {
+            throw new BadRequestException('Quiz has no questions');
+          }
+          const dto: CreateQuizDto = {
+            courseId,
+            moduleId,
+            languages,
+            language: languages[0],
+            title: asLocalized(item.title),
+            description: item.description
+              ? asLocalized(item.description)
+              : undefined,
+            coverImageUrl: item.coverImageUrl ?? null,
+            durationMinutes: item.durationMinutes ?? 30,
+            passingScorePercentage: item.passingScorePercentage ?? 70,
+            maxAttempts: item.maxAttempts ?? 1,
+            shuffleQuestions: Boolean(item.shuffleQuestions),
+            requiresUnlock: Boolean(item.requiresUnlock),
+            priceLkr: item.priceLkr ?? null,
+            status: item.status ?? QuizStatus.Draft,
+            questions: questions.map((q) => ({
+              questionText: asLocalized(q.questionText),
+              type: q.type ?? QuestionType.MCQ,
+              points: q.points ?? 1,
+              choices: (q.choices ?? []).map((c) => ({
+                choiceText: asLocalized(c.choiceText),
+                isCorrect: Boolean(c.isCorrect),
+                imageUrl: c.imageUrl ?? null,
+              })),
+            })),
+          };
+          await this.createQuiz(dto, userId);
+        }
+        created += 1;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Unknown error';
+        failures.push(`Quiz ${i + 1}: ${msg}`);
+      }
+    }
+
+    return {
+      created,
+      failed: failures.length,
+      total: items.length,
+      failures: failures.slice(0, 25),
+    };
   }
 }

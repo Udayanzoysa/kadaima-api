@@ -1,22 +1,9 @@
-import {
-  PrismaClient,
-  Role,
-  Action,
-  Subject,
-  QuizStatus,
-  QuestionStatus,
-  QuestionType,
-  Prisma,
-} from '@prisma/client';
+import { PrismaClient, Role, Action, Subject } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
-import {
-  PUBLISHED_QUIZ_BANK,
-  type Localized,
-  type SeedQuestion,
-  type SeedQuizDef,
-} from './seed-quiz-banks';
 
 const prisma = new PrismaClient();
+
+type Localized = { en: string; si: string; ta: string };
 
 type SeedModule = {
   title: Localized;
@@ -29,7 +16,7 @@ type SeedCourse = {
   modules: SeedModule[];
 };
 
-/** Temporary seed: national exam courses + subject/stream modules. */
+/** Core Sri Lankan exam courses + modules only (no sample quizzes). */
 const NATIONAL_EXAM_COURSES: SeedCourse[] = [
   {
     title: {
@@ -239,40 +226,52 @@ const NATIONAL_EXAM_COURSES: SeedCourse[] = [
   },
   {
     title: {
-      en: 'Cambridge / Edexcel (International)',
-      si: 'කේම්බ්‍රිජ් / එඩෙක්සෙල් (ජාත්‍යන්තර)',
-      ta: 'கேம்பிரிட்ஜ் / எடெக்ஸெல் (சர்வதேச)',
+      en: "Driving Licence Examination (Sri Lanka)",
+      si: "රියදුරු බලපත්‍ර විභාගය (ශ්‍රී ලංකාව)",
+      ta: "ஓட்டுநர் உரிமத் தேர்வு (இலங்கை)",
     },
     description: {
-      en: 'British Cambridge or Edexcel O/Level and A/Level pathways taken mainly in private and international schools.',
-      si: 'පුද්ගලික සහ ජාත්‍යන්තර පාසල්වල ප්‍රධාන වශයෙන් ලබා ගන්නා බ්‍රිතාන්‍ය කේම්බ්‍රිජ් හෝ එඩෙක්සෙල් O/Level සහ A/Level මාර්ග.',
-      ta: 'தனியார் மற்றும் சர்வதேசப் பள்ளிகளில் முக்கியமாக எழுதப்படும் பிரிட்டிஷ் கேம்பிரிட்ஜ் அல்லது எடெக்ஸெல் O/Level மற்றும் A/Level பாதைகள்.',
+      en: "Motor Traffic Department written theory and practical preparation for light and heavy vehicle licence categories in Sri Lanka.",
+      si: "ශ්‍රී ලංකාවේ සැහැල්ලු සහ බර රථ වාහන බලපත්‍ර කාණ්ඩ සඳහා මෝටර් රථ ප්‍රවාහන දෙපාර්තමේන්තුවේ ලිඛිත න්‍යාය සහ ප්‍රායෝගික සූදානම.",
+      ta: "இலங்கையில் இலகு மற்றும் கனரக வாகன உரிம வகைகளுக்கான மோட்டார் போக்குவரத்துத் திணைக்கள எழுத்துக் கோட்பாடு மற்றும் நடைமுறைத் தயாரிப்பு.",
     },
     modules: [
       {
         title: {
-          en: 'International O/Level',
-          si: 'ජාත්‍යන්තර O/Level',
-          ta: 'சர்வதேச O/Level',
-        },
+      en: "Highway Code & Road Signs",
+      si: "මාර්ග නීති සහ මාර්ග සංඥා",
+      ta: "நெடுஞ்சாலை விதிகள் & சாலை அடையாளங்கள்",
+    },
         description: {
-          en: 'Cambridge / Edexcel Ordinary Level practice subjects.',
-          si: 'කේම්බ්‍රිජ් / එඩෙක්සෙල් Ordinary Level පුහුණු විෂයන්.',
-          ta: 'கேம்பிரிட்ஜ் / எடெக்ஸெல் Ordinary Level பயிற்சிப் பாடங்கள்.',
-        },
+      en: "Road signs, markings, right of way, and Motor Traffic Act basics for the written paper.",
+      si: "ලිඛිත ප්‍රශ්න පත්‍රය සඳහා මාර්ග සංඥා, රේඛා, ප්‍රමුඛතාව සහ මෝටර් රථ ප්‍රවාහන පනතේ මූලික කරුණු.",
+      ta: "எழுத்துத் தேர்வுக்கான சாலை அடையாளங்கள், குறியீடுகள், முன்னுரிமை மற்றும் மோட்டார் போக்குவரத்துச் சட்ட அடிப்படைகள்.",
+    },
       },
       {
         title: {
-          en: 'International A/Level',
-          si: 'ජාත්‍යන්තර A/Level',
-          ta: 'சர்வதேச A/Level',
-        },
+      en: "Light Vehicles (Car / Motorcycle)",
+      si: "සැහැල්ලු වාහන (කාර් / යතුරුපැදි)",
+      ta: "இலகு வாகனங்கள் (கார் / மோட்டார் சைக்கிள்)",
+    },
         description: {
-          en: 'Cambridge / Edexcel Advanced Level practice subjects.',
-          si: 'කේම්බ්‍රිජ් / එඩෙක්සෙල් Advanced Level පුහුණු විෂයන්.',
-          ta: 'கேம்பிரிட்ஜ் / எடெக்ஸெல் Advanced Level பயிற்சிப் பாடங்கள்.',
-        },
+      en: "Theory for Class B (car) and Class A (motorcycle) licence categories.",
+      si: "B පන්තිය (කාර්) සහ A පන්තිය (යතුරුපැදි) බලපත්‍ර කාණ්ඩ සඳහා න්‍යාය.",
+      ta: "B வகுப்பு (கார்) மற்றும் A வகுப்பு (மோட்டார் சைக்கிள்) உரிம வகைகளுக்கான கோட்பாடு.",
+    },
       },
+      {
+        title: {
+      en: "Heavy Vehicles & Special Categories",
+      si: "බර වාහන සහ විශේෂ කාණ්ඩ",
+      ta: "கனரக வாகனங்கள் & சிறப்பு வகைகள்",
+    },
+        description: {
+      en: "Preparation for bus, lorry, and other heavy / special licence classes.",
+      si: "බස්, ලොරි සහ අනෙකුත් බර / විශේෂ බලපත්‍ර පන්ති සඳහා සූදානම.",
+      ta: "பேருந்து, லாரி மற்றும் பிற கனரக / சிறப்பு உரிம வகுப்புகளுக்கான தயாரிப்பு.",
+    },
+      }
     ],
   },
 ];
@@ -297,139 +296,6 @@ async function seedCourseWithModules(courseDef: SeedCourse) {
   return course;
 }
 
-async function createSeedQuestion(q: SeedQuestion, createdById: string) {
-  const points = q.points ?? 1;
-
-  if (q.type === 'MCQ') {
-    return prisma.question.create({
-      data: {
-        questionText: q.text,
-        type: QuestionType.MCQ,
-        points,
-        status: QuestionStatus.Published,
-        createdById,
-        choices: {
-          create: q.choices.map((choice, choiceIndex) => ({
-            choiceText: choice,
-            isCorrect: choiceIndex === q.correct,
-          })),
-        },
-      },
-    });
-  }
-
-  if (q.type === 'SHORT_TEXT') {
-    return prisma.question.create({
-      data: {
-        questionText: q.text,
-        type: QuestionType.SHORT_TEXT,
-        points,
-        status: QuestionStatus.Published,
-        createdById,
-        config: {
-          acceptedAnswers: q.acceptedAnswers,
-          matchMode: 'case_insensitive',
-        } as Prisma.InputJsonValue,
-      },
-    });
-  }
-
-  if (q.type === 'NUMERIC') {
-    return prisma.question.create({
-      data: {
-        questionText: q.text,
-        type: QuestionType.NUMERIC,
-        points,
-        status: QuestionStatus.Published,
-        createdById,
-        config: {
-          correctNumber: q.correctNumber,
-          tolerance: q.tolerance ?? 0,
-        } as Prisma.InputJsonValue,
-      },
-    });
-  }
-
-  // SEQUENCE — create choices in correct order, then set correctOrder to those IDs.
-  const created = await prisma.question.create({
-    data: {
-      questionText: q.text,
-      type: QuestionType.SEQUENCE,
-      points,
-      status: QuestionStatus.Published,
-      createdById,
-      config: {},
-    },
-  });
-
-  const correctOrder: string[] = [];
-  for (const item of q.items) {
-    const choice = await prisma.answerChoice.create({
-      data: {
-        questionId: created.id,
-        choiceText: item,
-        isCorrect: false,
-      },
-    });
-    correctOrder.push(choice.id);
-  }
-
-  return prisma.question.update({
-    where: { id: created.id },
-    data: {
-      config: { correctOrder } as Prisma.InputJsonValue,
-    },
-  });
-}
-
-async function seedPublishedQuiz(
-  def: SeedQuizDef,
-  courses: Awaited<ReturnType<typeof seedCourseWithModules>>[],
-  createdById: string,
-) {
-  const course = courses[def.courseIndex];
-  const module = course.modules[def.moduleIndex];
-  if (!course || !module) {
-    throw new Error(
-      `Missing course/module for quiz "${def.title.en}" (course ${def.courseIndex}, module ${def.moduleIndex})`,
-    );
-  }
-
-  const questionIds: string[] = [];
-  for (const q of def.questions) {
-    const created = await createSeedQuestion(q, createdById);
-    questionIds.push(created.id);
-  }
-
-  const quiz = await prisma.quiz.create({
-    data: {
-      courseId: course.id,
-      moduleId: module.id,
-      title: def.title,
-      description: def.description,
-      durationMinutes: def.durationMinutes,
-      passingScorePercentage: def.passingScorePercentage,
-      shuffleQuestions: true,
-      status: QuizStatus.Published,
-      requiresUnlock: def.requiresUnlock ?? false,
-      priceLkr: def.priceLkr ?? null,
-      createdById,
-    },
-  });
-
-  for (let index = 0; index < questionIds.length; index += 1) {
-    await prisma.quizQuestion.create({
-      data: {
-        quizId: quiz.id,
-        questionId: questionIds[index],
-        sortOrder: index,
-      },
-    });
-  }
-
-  return quiz;
-}
-
 async function main() {
   console.log('Clearing database...');
 
@@ -437,6 +303,7 @@ async function main() {
   await prisma.quizAttempt.deleteMany({});
   await prisma.guestLead.deleteMany({});
   await prisma.quizQuestion.deleteMany({});
+  await prisma.quizSection.deleteMany({});
   await prisma.answerChoice.deleteMany({});
   await prisma.question.deleteMany({});
   await prisma.teacherProfileQuiz.deleteMany({});
@@ -564,8 +431,6 @@ async function main() {
     },
   });
 
-  // Student account — plain USER role, no custom role/permission set, so RBAC
-  // grants it nothing beyond the self-service "My Quizzes" area on the frontend.
   const studentPasswordHash = await bcrypt.hash('student@123', salt);
   const student = await prisma.user.create({
     data: {
@@ -584,7 +449,6 @@ async function main() {
     },
   });
 
-  // Teacher account — USER + Teacher custom role (Quizzes / Questions only).
   const teacherPasswordHash = await bcrypt.hash('teacher@123', salt);
   const teacher = await prisma.user.create({
     data: {
@@ -604,74 +468,10 @@ async function main() {
     },
   });
 
-  const scholarshipCourse = await seedCourseWithModules(NATIONAL_EXAM_COURSES[0]);
-  const olCourse = await seedCourseWithModules(NATIONAL_EXAM_COURSES[1]);
-  const alCourse = await seedCourseWithModules(NATIONAL_EXAM_COURSES[2]);
-  const internationalCourse = await seedCourseWithModules(NATIONAL_EXAM_COURSES[3]);
-
-  const olMathModule = olCourse.modules[0];
-
-  // Draft example quiz shown in the teacher builder demo (not yet published).
-  const draftQuestion = await prisma.question.create({
-    data: {
-      questionText: {
-        en: 'What is 2 + 2?',
-        si: '2 + 2 යනු කුමක්ද?',
-        ta: '2 + 2 என்றால் என்ன?',
-      },
-      points: 1,
-      status: QuestionStatus.Draft,
-      createdById: superAdmin.id,
-      choices: {
-        create: [
-          { choiceText: { en: '3', si: '3', ta: '3' }, isCorrect: false },
-          { choiceText: { en: '4', si: '4', ta: '4' }, isCorrect: true },
-          { choiceText: { en: '5', si: '5', ta: '5' }, isCorrect: false },
-        ],
-      },
-    },
-  });
-
-  const draftQuiz = await prisma.quiz.create({
-    data: {
-      courseId: olCourse.id,
-      moduleId: olMathModule.id,
-      title: {
-        en: 'O/L Mathematics — Practice Paper',
-        si: 'O/L ගණිතය — පුහුණු ප්‍රශ්න පත්‍රය',
-        ta: 'O/L கணிதம் — பயிற்சி வினாத்தாள்',
-      },
-      description: {
-        en: 'Draft assessment covering O/L Mathematics fundamentals (algebra and geometry).',
-        si: 'O/L ගණිත මූලික කරුණු (වීජ ගණිතය සහ ජ්‍යාමිතිය) ආවරණය කරන කෙටුම්පත් ඇගයීමක්.',
-        ta: 'O/L கணித அடிப்படைகளை (இயற்கணிதம் மற்றும் வடிவியல்) உள்ளடக்கிய வரைவு மதிப்பீடு.',
-      },
-      durationMinutes: 30,
-      passingScorePercentage: 70,
-      shuffleQuestions: false,
-      status: QuizStatus.Draft,
-      createdById: superAdmin.id,
-    },
-  });
-
-  await prisma.quizQuestion.create({
-    data: {
-      quizId: draftQuiz.id,
-      questionId: draftQuestion.id,
-      sortOrder: 0,
-    },
-  });
-
-  const courses = [scholarshipCourse, olCourse, alCourse, internationalCourse];
-  let publishedCount = 0;
-  for (const def of PUBLISHED_QUIZ_BANK) {
-    await seedPublishedQuiz(def, courses, superAdmin.id);
-    publishedCount += 1;
+  const seededCourses: Awaited<ReturnType<typeof seedCourseWithModules>>[] = [];
+  for (const courseDef of NATIONAL_EXAM_COURSES) {
+    seededCourses.push(await seedCourseWithModules(courseDef));
   }
-
-  const byCourse = [0, 1, 2, 3].map(
-    (i) => PUBLISHED_QUIZ_BANK.filter((q) => q.courseIndex === i).length,
-  );
 
   console.log('Super admin seeded successfully:');
   console.log(`Email: ${superAdmin.email}`);
@@ -682,12 +482,12 @@ async function main() {
   console.log('Student account seeded successfully:');
   console.log(`Email: ${student.email}`);
   console.log('Password: student@123');
-  console.log('Courses seeded:');
-  console.log(`- ${NATIONAL_EXAM_COURSES[0].title.en} (${scholarshipCourse.modules.length} modules, ${byCourse[0]} quizzes)`);
-  console.log(`- ${NATIONAL_EXAM_COURSES[1].title.en} (${olCourse.modules.length} modules, ${byCourse[1]} quizzes)`);
-  console.log(`- ${NATIONAL_EXAM_COURSES[2].title.en} (${alCourse.modules.length} modules, ${byCourse[2]} quizzes)`);
-  console.log(`- ${NATIONAL_EXAM_COURSES[3].title.en} (${internationalCourse.modules.length} modules, ${byCourse[3]} quizzes)`);
-  console.log(`Published quizzes seeded: ${publishedCount} (plus 1 draft O/L quiz)`);
+  console.log('Courses seeded (no quizzes/questions):');
+  for (let i = 0; i < NATIONAL_EXAM_COURSES.length; i += 1) {
+    const def = NATIONAL_EXAM_COURSES[i];
+    const course = seededCourses[i];
+    console.log(`- ${def.title.en} (${course.modules.length} modules)`);
+  }
 }
 
 main()

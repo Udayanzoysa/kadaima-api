@@ -10,6 +10,8 @@ import {
   Put,
   Query,
   Req,
+  Res,
+  StreamableFile,
   UploadedFile,
   UseGuards,
   UseInterceptors,
@@ -26,6 +28,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { diskStorage, memoryStorage } from 'multer';
 import { extname, join } from 'path';
 import { existsSync, mkdirSync } from 'fs';
+import type { Response } from 'express';
 import { AuditAction, QuestionStatus } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { Audit } from '../audit/audit-log.decorator';
@@ -86,6 +89,43 @@ export class QuestionController {
   @ApiOperation({ summary: 'Bulk delete questions (archives if in use)' })
   bulkDelete(@Body() dto: BulkQuestionIdsDto) {
     return this.questionService.bulkDelete(dto.ids);
+  }
+
+  @Get('export')
+  @ApiOperation({ summary: 'Export question bank backup (JSON or Excel)' })
+  @ApiQuery({ name: 'format', required: false, enum: ['json', 'xlsx'] })
+  async exportBackup(
+    @Query('format') format: string | undefined,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const fmt = format === 'xlsx' ? 'xlsx' : 'json';
+    const file = await this.questionService.exportBackup(fmt);
+    res.set({
+      'Content-Type': file.contentType,
+      'Content-Disposition': `attachment; filename="${file.filename}"`,
+    });
+    return new StreamableFile(file.buffer);
+  }
+
+  @Post('import')
+  @Audit('QUESTIONS', AuditAction.CREATE)
+  @ApiOperation({ summary: 'Import question bank backup (JSON or Excel)' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: { file: { type: 'string', format: 'binary' } },
+      required: ['file'],
+    },
+  })
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: memoryStorage(),
+      limits: { fileSize: 20 * 1024 * 1024 },
+    }),
+  )
+  importBackup(@UploadedFile() file: Express.Multer.File, @Req() req: any) {
+    return this.questionService.importBackup(file, req.user.id);
   }
 
   @Post('ai/import-pdf')
