@@ -1,7 +1,7 @@
 FROM node:18-alpine
 
-# Install compatibility libraries for older OpenSSL targets
-RUN apk add --no-cache libc6-compat openssl
+# Install compatibility libraries for older OpenSSL targets + pg_dump/pg_restore
+RUN apk add --no-cache libc6-compat openssl postgresql15-client
 
 # Set working directory
 WORKDIR /app

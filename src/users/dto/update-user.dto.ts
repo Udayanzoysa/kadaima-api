@@ -84,6 +84,18 @@ export class UpdateUserDto {
   customRoleId?: string;
 
   @ApiProperty({
+    example: 'SUPER_ADMIN',
+    description:
+      'System privilege role. Only the root platform owner may set this.',
+    enum: ['SUPER_ADMIN', 'CUSTOMER_ADMIN', 'USER'],
+    required: false,
+  })
+  @IsString()
+  @IsIn(['SUPER_ADMIN', 'CUSTOMER_ADMIN', 'USER'])
+  @IsOptional()
+  role?: 'SUPER_ADMIN' | 'CUSTOMER_ADMIN' | 'USER';
+
+  @ApiProperty({
     example: 'Active',
     description: 'Account status',
     enum: ['Active', 'Inactive', 'Suspended'],

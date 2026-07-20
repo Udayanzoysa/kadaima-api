@@ -315,6 +315,7 @@ async function main() {
   await prisma.quiz.deleteMany({});
   await prisma.module.deleteMany({});
   await prisma.course.deleteMany({});
+  await prisma.databaseBackup.deleteMany({});
   await prisma.teacherContactInquiry.deleteMany({});
   await prisma.teacherBanner.deleteMany({});
   await prisma.teacherClass.deleteMany({});

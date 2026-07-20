@@ -33,6 +33,7 @@ async function main() {
   const quizzes = await prisma.quiz.deleteMany({});
   const modules = await prisma.module.deleteMany({});
   const courses = await prisma.course.deleteMany({});
+  const backups = await prisma.databaseBackup.deleteMany({});
 
   console.log('Deleted counts:');
   console.table({
@@ -52,6 +53,7 @@ async function main() {
     quizzes: quizzes.count,
     modules: modules.count,
     courses: courses.count,
+    databaseBackups: backups.count,
   });
 
   console.log('Content cleaned. Users / roles / workspace kept.');

@@ -201,6 +201,7 @@ model User {
   passwordResetTokens PasswordResetToken[]
   teacherProfile     TeacherProfile?
   auditLogs          AuditLog[]
+  databaseBackups    DatabaseBackup[]
 
   @@index([workspaceId])
   @@index([workspaceId, status])
@@ -368,6 +369,38 @@ model SystemSetting {
   updatedBy       String?  @map("updated_by")
 
   @@map("system_settings")
+}
+
+enum DatabaseBackupStatus {
+  PENDING
+  RUNNING
+  READY
+  FAILED
+  RESTORING
+}
+
+/// Super-admin master DB backups (pg_dump custom format on disk).
+model DatabaseBackup {
+  id           String                @id @default(uuid()) @db.Uuid
+  label        String?               @db.VarChar(160)
+  status       DatabaseBackupStatus  @default(PENDING)
+  /// Absolute or app-relative path under uploads/backups
+  filePath     String?               @map("file_path")
+  fileName     String?               @map("file_name") @db.VarChar(255)
+  sizeBytes    BigInt?               @map("size_bytes")
+  checksumSha256 String?             @map("checksum_sha256") @db.VarChar(64)
+  pgVersion    String?               @map("pg_version") @db.VarChar(64)
+  errorMessage String?               @map("error_message") @db.Text
+  createdById  String?               @map("created_by_id") @db.Uuid
+  createdBy    User?                 @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  startedAt    DateTime?             @map("started_at")
+  finishedAt   DateTime?             @map("finished_at")
+  createdAt    DateTime              @default(now()) @map("created_at")
+  updatedAt    DateTime              @updatedAt @map("updated_at")
+
+  @@index([status])
+  @@index([createdAt])
+  @@map("database_backups")
 }
 
 /// Immutable trail of major operations (auth events + CUD actions), super-admin only.

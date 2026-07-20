@@ -20,7 +20,11 @@ import {
 import * as bcrypt from 'bcrypt';
 import { authenticator } from 'otplib';
 import { validateAndCleanSriLankanNumber } from '../common/phone-validator';
-import { isPlatformOwner } from '../common/platform-owner';
+import {
+  isPlatformOwner,
+  isRootPlatformOwner,
+} from '../common/platform-owner';
+import { Role } from '@prisma/client';
 
 @Injectable()
 export class UsersService {
@@ -226,9 +230,33 @@ export class UsersService {
     });
     if (!callingUser) throw new NotFoundException('Calling user not found.');
 
-    // Fetch target user with Udaya email claim verification bypass
+    // Fetch target user with platform-owner workspace bypass
     const targetUser = await this.getUserById(workspaceId, id, callingUserId);
     if (!targetUser) throw new NotFoundException();
+
+    const targetIsRoot = isRootPlatformOwner(targetUser);
+    const callerIsRoot = isRootPlatformOwner(callingUser);
+
+    // Root account: only the root may update themselves, and only safe profile fields
+    if (targetIsRoot) {
+      if (!callerIsRoot || id !== callingUserId) {
+        throw new ForbiddenException(
+          'The root platform owner account cannot be edited.',
+        );
+      }
+      if (
+        dto.role !== undefined ||
+        dto.status !== undefined ||
+        dto.canViewOthers !== undefined ||
+        dto.canManagePermissions !== undefined ||
+        dto.customRoleId !== undefined ||
+        dto.team !== undefined
+      ) {
+        throw new ForbiddenException(
+          'Root platform owner privilege fields cannot be changed.',
+        );
+      }
+    }
 
     // Hierarchical update verification
     if (!isPlatformOwner(callingUser)) {
@@ -282,6 +310,40 @@ export class UsersService {
       status: dto.status,
     };
 
+    // System role: root platform owner only; never change root's own role
+    if (dto.role !== undefined) {
+      if (!callerIsRoot) {
+        throw new ForbiddenException(
+          'Only the root platform owner can grant or revoke Super Admin.',
+        );
+      }
+      if (targetIsRoot) {
+        throw new ForbiddenException(
+          'The root platform owner system role cannot be changed.',
+        );
+      }
+      updateData.role = dto.role as Role;
+      if (dto.role === 'SUPER_ADMIN') {
+        updateData.canViewOthers = true;
+        updateData.canManagePermissions = true;
+        if (dto.team === undefined) {
+          updateData.team = 'Executive';
+        }
+        if (dto.customRoleId === undefined) {
+          const ownerRole = await this.prisma.customRole.findFirst({
+            where: {
+              workspaceId: targetUser.workspaceId,
+              name: 'Owner',
+            },
+            select: { id: true },
+          });
+          if (ownerRole) {
+            updateData.customRoleId = ownerRole.id;
+          }
+        }
+      }
+    }
+
     // Workspace Name update
     if (dto.workspaceName) {
       const isOwner = callingUser.role === 'SUPER_ADMIN' || targetUser.customRole?.name === 'Owner';
@@ -315,8 +377,8 @@ export class UsersService {
       updateData.passwordHash = await bcrypt.hash(dto.newPassword, salt);
     }
 
-    // Permission flags are exclusive to Level 0
-    if (isPlatformOwner(callingUser)) {
+    // Permission flags are exclusive to platform owners (not against root)
+    if (isPlatformOwner(callingUser) && !targetIsRoot) {
       if (dto.canViewOthers !== undefined) updateData.canViewOthers = dto.canViewOthers;
       if (dto.canManagePermissions !== undefined) updateData.canManagePermissions = dto.canManagePermissions;
     }
@@ -371,8 +433,10 @@ export class UsersService {
     if (id === callingUserId) {
       throw new BadRequestException('You cannot soft-delete your own account.');
     }
-    if (isPlatformOwner(targetUser) || targetUser.customRole?.name === 'Owner') {
-      throw new ForbiddenException('The workspace owner cannot be deactivated.');
+    if (isRootPlatformOwner(targetUser)) {
+      throw new ForbiddenException(
+        'The root platform owner cannot be deactivated.',
+      );
     }
 
     const updated = await this.prisma.user.update({
@@ -408,8 +472,10 @@ export class UsersService {
     if (id === callingUserId) {
       throw new BadRequestException('You cannot permanently delete your own account.');
     }
-    if (isPlatformOwner(targetUser) || targetUser.customRole?.name === 'Owner') {
-      throw new ForbiddenException('The workspace owner cannot be permanently deleted.');
+    if (isRootPlatformOwner(targetUser)) {
+      throw new ForbiddenException(
+        'The root platform owner cannot be permanently deleted.',
+      );
     }
 
     await this.prisma.$transaction(async (tx) => {

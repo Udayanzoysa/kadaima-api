@@ -31,4 +31,8 @@ export const envValidationSchema = Joi.object({
   AI_API_KEY: Joi.string().allow('').optional(),
   AI_MODEL: Joi.string().allow('').optional(),
   AI_MODEL_FALLBACKS: Joi.string().allow('').optional(),
+
+  // Master DB backups (pg_dump)
+  BACKUP_RETENTION_COUNT: Joi.number().integer().min(1).max(100).default(14),
+  BACKUP_CRON_ENABLED: Joi.boolean().truthy('true').falsy('false').default(false),
 }).unknown(true);
