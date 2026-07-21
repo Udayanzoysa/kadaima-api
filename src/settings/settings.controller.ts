@@ -61,10 +61,27 @@ export class SettingsController {
   }
 
   @Get('notifications/email-template')
-  @ApiOperation({ summary: 'Preview the password-reset email HTML template' })
+  @ApiOperation({
+    summary:
+      'Preview a transactional email HTML template (password-reset, welcome, payment, etc.)',
+  })
   @ApiQuery({ name: 'email', required: false })
-  getEmailTemplate(@Query('email') email?: string) {
+  @ApiQuery({
+    name: 'kind',
+    required: false,
+    description:
+      'password-reset | password-changed | welcome | invite | teacher-activated | payment-receipt | payment-failed | slip-reviewed | teacher-payout-pending | teacher-payout-approved | teacher-payout-paid | teacher-payout-held',
+  })
+  getEmailTemplate(
+    @Query('email') email?: string,
+    @Query('kind') kind?: string,
+  ) {
+    const allowed = this.mailService.listTemplateKinds();
+    const resolvedKind = allowed.includes(kind as any)
+      ? (kind as (typeof allowed)[number])
+      : 'password-reset';
     return this.mailService.getEmailTemplatePreview(
+      resolvedKind,
       email?.trim() || 'student@example.com',
     );
   }

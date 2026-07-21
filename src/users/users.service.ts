@@ -10,9 +10,17 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import {
+  PASSWORD_CHANGED_EVENT,
+  PasswordChangedEvent,
+} from '../notification/events/password-changed.event';
+import {
   TEACHER_ACTIVATED_EVENT,
   TeacherActivatedEvent,
 } from '../notification/events/teacher-activated.event';
+import {
+  USER_INVITE_EVENT,
+  UserInviteEvent,
+} from '../notification/events/user-invite.event';
 import {
   USER_WELCOME_EVENT,
   UserWelcomeEvent,
@@ -383,7 +391,8 @@ export class UsersService {
       if (dto.canManagePermissions !== undefined) updateData.canManagePermissions = dto.canManagePermissions;
     }
 
-    return this.prisma.user.update({
+    const passwordChanged = Boolean(dto.newPassword);
+    const updated = await this.prisma.user.update({
       where: { id },
       data: updateData,
       include: {
@@ -391,6 +400,19 @@ export class UsersService {
         workspace: true,
       },
     });
+
+    if (passwordChanged && updated.email) {
+      const userName =
+        updated.name ||
+        [updated.firstName, updated.lastName].filter(Boolean).join(' ') ||
+        null;
+      this.eventEmitter.emit(
+        PASSWORD_CHANGED_EVENT,
+        new PasswordChangedEvent(updated.id, updated.email, userName, 'changed'),
+      );
+    }
+
+    return updated;
   }
 
   private async assertCanManageUser(
@@ -582,6 +604,25 @@ export class UsersService {
         throw new ForbiddenException('Access denied.');
       }
     }
+
+    const invitedByName =
+      callingUser.name ||
+      [callingUser.firstName, callingUser.lastName].filter(Boolean).join(' ') ||
+      callingUser.email;
+    const userName =
+      targetUser.name ||
+      [targetUser.firstName, targetUser.lastName].filter(Boolean).join(' ') ||
+      null;
+
+    this.eventEmitter.emit(
+      USER_INVITE_EVENT,
+      new UserInviteEvent(
+        targetUser.id,
+        targetUser.email,
+        userName,
+        invitedByName,
+      ),
+    );
 
     return {
       status: 'success',

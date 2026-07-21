@@ -25,6 +25,10 @@ import { ValidateResetTokenDto } from './dto/validate-reset-token.dto';
 import { PasswordResetChannel, Role, Action, Subject } from '@prisma/client';
 import { validateAndCleanSriLankanNumber } from '../common/phone-validator';
 import {
+  PASSWORD_CHANGED_EVENT,
+  PasswordChangedEvent,
+} from '../notification/events/password-changed.event';
+import {
   PASSWORD_RESET_EVENT,
   PasswordResetEvent,
 } from '../notification/events/password-reset.event';
@@ -273,6 +277,21 @@ export class AuthService {
         data: { isUsed: true },
       });
     });
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { email: true, name: true, firstName: true, lastName: true },
+    });
+    if (user?.email) {
+      const userName =
+        user.name ||
+        [user.firstName, user.lastName].filter(Boolean).join(' ') ||
+        null;
+      this.eventEmitter.emit(
+        PASSWORD_CHANGED_EVENT,
+        new PasswordChangedEvent(userId, user.email, userName, 'reset'),
+      );
+    }
 
     return { message: 'Password updated successfully. You can sign in now.' };
   }
@@ -1160,6 +1179,15 @@ export class AuthService {
       where: { id: userId },
       data: { passwordHash },
     });
+
+    const userName =
+      user.name ||
+      [user.firstName, user.lastName].filter(Boolean).join(' ') ||
+      null;
+    this.eventEmitter.emit(
+      PASSWORD_CHANGED_EVENT,
+      new PasswordChangedEvent(userId, user.email, userName, 'changed'),
+    );
 
     return { ok: true };
   }

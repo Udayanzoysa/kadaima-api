@@ -10,13 +10,22 @@ import {
   SendNotificationPayload,
 } from '../interfaces/notification.interface';
 import {
+  buildEmailByKind,
+  buildInviteEmail,
+  buildPasswordChangedEmail,
   buildPasswordResetEmail,
+  buildPaymentFailedEmail,
+  buildPaymentReceiptEmail,
+  buildSlipReviewedEmail,
   buildSmtpTestEmail,
   buildTeacherActivatedEmail,
+  buildTeacherPayoutEmail,
   buildWelcomeEmail,
-  PasswordResetEmailContent,
+  EMAIL_TEMPLATE_KINDS,
+  EmailContent,
+  EmailTemplateKind,
+  TeacherPayoutEmailStatus,
   WelcomeAccountType,
-  WelcomeEmailContent,
 } from './email-templates';
 
 export interface SentMailResult {
@@ -53,31 +62,28 @@ export class MailService implements INotificationService {
     return Math.max(1, Math.round(ttlSeconds / 60));
   }
 
-  previewPasswordResetTemplate(
-    recipientEmail: string,
-    code = '123456',
-    userName?: string,
-  ): PasswordResetEmailContent {
-    return buildPasswordResetEmail({
-      recipientEmail,
-      userName,
-      code,
-      frontendUrl: this.getFrontendUrl(),
-      expiresMinutes: this.getExpiresMinutes(),
-      supportEmail: this.getSupportEmail(),
-    });
+  listTemplateKinds() {
+    return EMAIL_TEMPLATE_KINDS;
   }
 
-  getEmailTemplatePreview(sampleEmail = 'student@example.com', userName?: string) {
-    const content = this.previewPasswordResetTemplate(sampleEmail, '123456', userName);
+  getEmailTemplatePreview(
+    kind: EmailTemplateKind = 'password-reset',
+    sampleEmail = 'student@example.com',
+    userName?: string,
+  ) {
+    const content = buildEmailByKind(kind, {
+      recipientEmail: sampleEmail,
+      userName,
+      frontendUrl: this.getFrontendUrl(),
+      supportEmail: this.getSupportEmail(),
+    });
     return {
+      kind,
+      kinds: EMAIL_TEMPLATE_KINDS,
       to: sampleEmail,
       subject: content.subject,
       html: content.html,
       text: content.text,
-      resetUrl:
-        `${this.getFrontendUrl().replace(/\/$/, '')}/reset-password` +
-        `?channel=EMAIL&email=${encodeURIComponent(sampleEmail)}&code=123456`,
     };
   }
 
@@ -190,12 +196,32 @@ export class MailService implements INotificationService {
     userName?: string | null;
     accountType?: WelcomeAccountType;
   }): Promise<SentMailResult> {
-    const content: WelcomeEmailContent = buildWelcomeEmail({
+    const content: EmailContent = buildWelcomeEmail({
       recipientEmail: options.to,
       userName: options.userName || undefined,
       accountType: options.accountType,
       frontendUrl: this.getFrontendUrl(),
       supportEmail: this.getSupportEmail(),
+    });
+    return this.deliver({
+      to: options.to,
+      subject: content.subject,
+      text: content.text,
+      html: content.html,
+    });
+  }
+
+  async sendInvite(options: {
+    to: string;
+    userName?: string | null;
+    invitedByName?: string | null;
+  }): Promise<SentMailResult> {
+    const content = buildInviteEmail({
+      recipientEmail: options.to,
+      userName: options.userName || undefined,
+      frontendUrl: this.getFrontendUrl(),
+      supportEmail: this.getSupportEmail(),
+      invitedByName: options.invitedByName || undefined,
     });
     return this.deliver({
       to: options.to,
@@ -216,6 +242,138 @@ export class MailService implements INotificationService {
       frontendUrl: this.getFrontendUrl(),
       supportEmail: this.getSupportEmail(),
       publicPagePath: options.publicPagePath,
+    });
+    return this.deliver({
+      to: options.to,
+      subject: content.subject,
+      text: content.text,
+      html: content.html,
+    });
+  }
+
+  async sendPasswordChanged(options: {
+    to: string;
+    userName?: string | null;
+    reason: 'changed' | 'reset';
+  }): Promise<SentMailResult> {
+    const content = buildPasswordChangedEmail({
+      recipientEmail: options.to,
+      userName: options.userName || undefined,
+      frontendUrl: this.getFrontendUrl(),
+      supportEmail: this.getSupportEmail(),
+      reason: options.reason,
+    });
+    return this.deliver({
+      to: options.to,
+      subject: content.subject,
+      text: content.text,
+      html: content.html,
+    });
+  }
+
+  async sendPaymentReceipt(options: {
+    to: string;
+    userName?: string | null;
+    purpose: string;
+    amountLkr: number;
+    orderId: string;
+    quizTitle?: string | null;
+    currency?: string;
+  }): Promise<SentMailResult> {
+    const content = buildPaymentReceiptEmail({
+      recipientEmail: options.to,
+      userName: options.userName || undefined,
+      frontendUrl: this.getFrontendUrl(),
+      supportEmail: this.getSupportEmail(),
+      purpose: options.purpose,
+      amountLkr: options.amountLkr,
+      orderId: options.orderId,
+      quizTitle: options.quizTitle,
+      currency: options.currency,
+    });
+    return this.deliver({
+      to: options.to,
+      subject: content.subject,
+      text: content.text,
+      html: content.html,
+    });
+  }
+
+  async sendPaymentFailed(options: {
+    to: string;
+    userName?: string | null;
+    purpose: string;
+    amountLkr: number;
+    orderId: string;
+    status: string;
+    quizTitle?: string | null;
+    currency?: string;
+  }): Promise<SentMailResult> {
+    const content = buildPaymentFailedEmail({
+      recipientEmail: options.to,
+      userName: options.userName || undefined,
+      frontendUrl: this.getFrontendUrl(),
+      supportEmail: this.getSupportEmail(),
+      purpose: options.purpose,
+      amountLkr: options.amountLkr,
+      orderId: options.orderId,
+      status: options.status,
+      quizTitle: options.quizTitle,
+      currency: options.currency,
+    });
+    return this.deliver({
+      to: options.to,
+      subject: content.subject,
+      text: content.text,
+      html: content.html,
+    });
+  }
+
+  async sendSlipReviewed(options: {
+    to: string;
+    userName?: string | null;
+    status: 'Approved' | 'Rejected';
+    quizTitle?: string | null;
+    note?: string | null;
+  }): Promise<SentMailResult> {
+    const content = buildSlipReviewedEmail({
+      recipientEmail: options.to,
+      userName: options.userName || undefined,
+      frontendUrl: this.getFrontendUrl(),
+      supportEmail: this.getSupportEmail(),
+      status: options.status,
+      quizTitle: options.quizTitle,
+      note: options.note,
+    });
+    return this.deliver({
+      to: options.to,
+      subject: content.subject,
+      text: content.text,
+      html: content.html,
+    });
+  }
+
+  async sendTeacherPayout(options: {
+    to: string;
+    userName?: string | null;
+    status: TeacherPayoutEmailStatus;
+    amountLkr: number;
+    periodLabel: string;
+    attemptCount?: number | null;
+    reference?: string | null;
+    currency?: string;
+  }): Promise<SentMailResult> {
+    const content = buildTeacherPayoutEmail({
+      recipientEmail: options.to,
+      userName: options.userName || undefined,
+      frontendUrl: this.getFrontendUrl(),
+      supportEmail: this.getSupportEmail(),
+      status: options.status,
+      amountLkr: options.amountLkr,
+      periodLabel: options.periodLabel,
+      attemptCount: options.attemptCount,
+      reference: options.reference,
+      currency: options.currency,
     });
     return this.deliver({
       to: options.to,

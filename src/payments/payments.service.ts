@@ -1,8 +1,10 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import {
   PaymentOrderStatus,
   PaymentProvider,
@@ -12,6 +14,9 @@ import {
 } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
+import { PAYMENT_FAILED_EVENT, PaymentFailedEvent } from '../notification/events/payment-failed.event';
+import { PAYMENT_PAID_EVENT, PaymentPaidEvent } from '../notification/events/payment-paid.event';
+import { SLIP_REVIEWED_EVENT, SlipReviewedEvent } from '../notification/events/slip-reviewed.event';
 import { PayHereCheckoutDto } from './dto/payhere-checkout.dto';
 import {
   CreateVoucherDto,
@@ -33,7 +38,108 @@ import {
 
 @Injectable()
 export class PaymentsService {
-  constructor(private prisma: PrismaService) {}
+  private readonly logger = new Logger(PaymentsService.name);
+
+  constructor(
+    private prisma: PrismaService,
+    private eventEmitter: EventEmitter2,
+  ) {}
+
+  private quizTitleText(title: unknown): string | null {
+    if (!title) return null;
+    if (typeof title === 'string') return title;
+    if (typeof title === 'object' && title && 'en' in title) {
+      const en = (title as { en?: string }).en;
+      return en?.trim() || null;
+    }
+    return null;
+  }
+
+  private async resolveOrderEmail(order: {
+    userId: string | null;
+    quizId: string | null;
+    purpose: string;
+    amountLkr: unknown;
+    orderId: string;
+    currency?: string | null;
+  }) {
+    if (!order.userId) return null;
+    const user = await this.prisma.user.findUnique({
+      where: { id: order.userId },
+      select: { email: true, name: true, firstName: true, lastName: true },
+    });
+    if (!user?.email) return null;
+
+    let quizTitle: string | null = null;
+    if (order.quizId) {
+      const quiz = await this.prisma.quiz.findUnique({
+        where: { id: order.quizId },
+        select: { title: true },
+      });
+      quizTitle = this.quizTitleText(quiz?.title);
+    }
+
+    return {
+      email: user.email,
+      userName:
+        user.name ||
+        [user.firstName, user.lastName].filter(Boolean).join(' ') ||
+        null,
+      purpose: order.purpose,
+      amountLkr: Number(order.amountLkr),
+      orderId: order.orderId,
+      quizTitle,
+      currency: order.currency || 'LKR',
+    };
+  }
+
+  private emitPaymentPaid(payload: {
+    email: string;
+    userName: string | null;
+    purpose: string;
+    amountLkr: number;
+    orderId: string;
+    quizTitle?: string | null;
+    currency?: string;
+  }) {
+    this.eventEmitter.emit(
+      PAYMENT_PAID_EVENT,
+      new PaymentPaidEvent(
+        payload.email,
+        payload.userName,
+        payload.purpose,
+        payload.amountLkr,
+        payload.orderId,
+        payload.quizTitle,
+        payload.currency || 'LKR',
+      ),
+    );
+  }
+
+  private emitPaymentFailed(payload: {
+    email: string;
+    userName: string | null;
+    purpose: string;
+    amountLkr: number;
+    orderId: string;
+    status: string;
+    quizTitle?: string | null;
+    currency?: string;
+  }) {
+    this.eventEmitter.emit(
+      PAYMENT_FAILED_EVENT,
+      new PaymentFailedEvent(
+        payload.email,
+        payload.userName,
+        payload.purpose,
+        payload.amountLkr,
+        payload.orderId,
+        payload.status,
+        payload.quizTitle,
+        payload.currency || 'LKR',
+      ),
+    );
+  }
 
   private async getBilling() {
     const row = await this.prisma.systemSetting.findUnique({
@@ -473,6 +579,15 @@ export class PaymentsService {
         });
       }
 
+      try {
+        const mail = await this.resolveOrderEmail(order);
+        if (mail) this.emitPaymentPaid(mail);
+      } catch (err) {
+        this.logger.warn(
+          `Payment receipt email skipped: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+
       return { ok: true };
     }
 
@@ -489,6 +604,17 @@ export class PaymentsService {
           providerPaymentId: paymentId,
         },
       });
+
+      try {
+        const mail = await this.resolveOrderEmail(order);
+        if (mail) {
+          this.emitPaymentFailed({ ...mail, status: failedStatus });
+        }
+      } catch (err) {
+        this.logger.warn(
+          `Payment failed email skipped: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
 
     return { ok: true, status: failedStatus };
@@ -545,6 +671,15 @@ export class PaymentsService {
         method: UnlockMethod.PayHere,
         paymentOrderId: order.id,
       });
+    }
+
+    try {
+      const mail = await this.resolveOrderEmail(order);
+      if (mail) this.emitPaymentPaid(mail);
+    } catch (err) {
+      this.logger.warn(
+        `Sandbox payment receipt email skipped: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
 
     return { ok: true };
@@ -713,7 +848,10 @@ export class PaymentsService {
     const slip = await this.prisma.paymentSlipSubmission.findUnique({
       where: { id },
       include: {
-        quiz: { select: { id: true, priceLkr: true } },
+        quiz: { select: { id: true, priceLkr: true, title: true } },
+        user: {
+          select: { email: true, name: true, firstName: true, lastName: true },
+        },
       },
     });
     if (!slip) throw new NotFoundException('Slip not found');
@@ -754,16 +892,39 @@ export class PaymentsService {
       }
     }
 
+    if (!alreadyApproved && slip.user?.email) {
+      const userName =
+        slip.user.name ||
+        [slip.user.firstName, slip.user.lastName].filter(Boolean).join(' ') ||
+        null;
+      this.eventEmitter.emit(
+        SLIP_REVIEWED_EVENT,
+        new SlipReviewedEvent(
+          slip.user.email,
+          userName,
+          'Approved',
+          this.quizTitleText(slip.quiz.title),
+          null,
+        ),
+      );
+    }
+
     return { ok: true, alreadyApproved };
   }
 
   async rejectSlip(id: string, note?: string) {
     const slip = await this.prisma.paymentSlipSubmission.findUnique({
       where: { id },
+      include: {
+        quiz: { select: { title: true } },
+        user: {
+          select: { email: true, name: true, firstName: true, lastName: true },
+        },
+      },
     });
     if (!slip) throw new NotFoundException('Slip not found');
 
-    return this.prisma.paymentSlipSubmission.update({
+    const updated = await this.prisma.paymentSlipSubmission.update({
       where: { id },
       data: {
         status: SlipSubmissionStatus.Rejected,
@@ -771,6 +932,25 @@ export class PaymentsService {
         note: note?.trim() || slip.note,
       },
     });
+
+    if (slip.user?.email) {
+      const userName =
+        slip.user.name ||
+        [slip.user.firstName, slip.user.lastName].filter(Boolean).join(' ') ||
+        null;
+      this.eventEmitter.emit(
+        SLIP_REVIEWED_EVENT,
+        new SlipReviewedEvent(
+          slip.user.email,
+          userName,
+          'Rejected',
+          this.quizTitleText(slip.quiz.title),
+          updated.note,
+        ),
+      );
+    }
+
+    return updated;
   }
 
   /** Logged-in student's own payment history (PayHere orders, subscription, vouchers, slips). */

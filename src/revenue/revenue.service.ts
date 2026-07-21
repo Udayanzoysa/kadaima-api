@@ -1,8 +1,10 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import {
   AttemptStatus,
   Prisma,
@@ -13,6 +15,11 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { SettingsService } from '../settings/settings.service';
 import { PLATFORM_OWNER_EMAIL } from '../common/platform-owner';
+import {
+  TEACHER_PAYOUT_EVENT,
+  TeacherPayoutEvent,
+  TeacherPayoutNotifyStatus,
+} from '../notification/events/teacher-payout.event';
 import {
   CalculateRevenuePeriodDto,
   UpdatePayoutStatusDto,
@@ -39,10 +46,108 @@ function asNumber(value: Prisma.Decimal | number | string): number {
 
 @Injectable()
 export class RevenueService {
+  private readonly logger = new Logger(RevenueService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly settings: SettingsService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
+
+  private periodLabel(periodStart: Date): string {
+    return periodStart.toLocaleDateString('en-GB', {
+      month: 'long',
+      year: 'numeric',
+      timeZone: 'UTC',
+    });
+  }
+
+  private teacherDisplayName(u: {
+    name?: string | null;
+    firstName?: string | null;
+    lastName?: string | null;
+    email: string;
+  }): string {
+    return (
+      [u.firstName, u.lastName].filter(Boolean).join(' ').trim() ||
+      u.name?.trim() ||
+      u.email
+    );
+  }
+
+  private emitTeacherPayout(payload: {
+    email: string;
+    userName?: string | null;
+    status: TeacherPayoutNotifyStatus;
+    amountLkr: number;
+    periodLabel: string;
+    attemptCount?: number | null;
+    reference?: string | null;
+  }) {
+    this.eventEmitter.emit(
+      TEACHER_PAYOUT_EVENT,
+      new TeacherPayoutEvent(
+        payload.email,
+        payload.userName,
+        payload.status,
+        payload.amountLkr,
+        payload.periodLabel,
+        payload.attemptCount,
+        payload.reference,
+      ),
+    );
+  }
+
+  private async notifyPayoutsForPeriod(
+    periodId: string,
+    statusFilter: TeacherPayoutStatus[],
+    notifyStatus: TeacherPayoutNotifyStatus,
+  ) {
+    try {
+      const payouts = await this.prisma.teacherPayout.findMany({
+        where: {
+          periodId,
+          status: { in: statusFilter },
+        },
+        include: {
+          period: { select: { periodStart: true } },
+          teacher: {
+            select: {
+              email: true,
+              name: true,
+              firstName: true,
+              lastName: true,
+            },
+          },
+        },
+      });
+
+      const shares = await this.prisma.teacherRevenueShare.findMany({
+        where: { periodId },
+        select: { teacherUserId: true, attemptCount: true },
+      });
+      const attemptsByTeacher = new Map(
+        shares.map((s) => [s.teacherUserId, s.attemptCount]),
+      );
+
+      for (const p of payouts) {
+        if (!p.teacher?.email) continue;
+        this.emitTeacherPayout({
+          email: p.teacher.email,
+          userName: this.teacherDisplayName(p.teacher),
+          status: notifyStatus,
+          amountLkr: asNumber(p.amountLkr),
+          periodLabel: this.periodLabel(p.period.periodStart),
+          attemptCount: attemptsByTeacher.get(p.teacherUserId) ?? null,
+          reference: p.reference,
+        });
+      }
+    } catch (err) {
+      this.logger.warn(
+        `Teacher payout emails skipped: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
 
   async listPeriods() {
     const periods = await this.prisma.revenuePeriod.findMany({
@@ -299,6 +404,12 @@ export class RevenueService {
       });
     });
 
+    await this.notifyPayoutsForPeriod(
+      id,
+      [TeacherPayoutStatus.Pending],
+      'Pending',
+    );
+
     return this.getPeriod(id);
   }
 
@@ -331,6 +442,8 @@ export class RevenueService {
         data: { status: RevenuePeriodStatus.Paid },
       });
     });
+
+    await this.notifyPayoutsForPeriod(id, [TeacherPayoutStatus.Paid], 'Paid');
 
     return this.getPeriod(id);
   }
@@ -389,6 +502,17 @@ export class RevenueService {
   async updatePayout(id: string, dto: UpdatePayoutStatusDto) {
     const payout = await this.prisma.teacherPayout.findUnique({
       where: { id },
+      include: {
+        period: { select: { periodStart: true } },
+        teacher: {
+          select: {
+            email: true,
+            name: true,
+            firstName: true,
+            lastName: true,
+          },
+        },
+      },
     });
     if (!payout) throw new NotFoundException('Payout not found');
 
@@ -397,6 +521,7 @@ export class RevenueService {
       throw new BadRequestException('Invalid payout status');
     }
 
+    const previousStatus = payout.status;
     const updated = await this.prisma.teacherPayout.update({
       where: { id },
       data: {
@@ -408,6 +533,27 @@ export class RevenueService {
             : null,
       },
     });
+
+    if (previousStatus !== updated.status && payout.teacher?.email) {
+      const share = await this.prisma.teacherRevenueShare.findUnique({
+        where: {
+          periodId_teacherUserId: {
+            periodId: payout.periodId,
+            teacherUserId: payout.teacherUserId,
+          },
+        },
+        select: { attemptCount: true },
+      });
+      this.emitTeacherPayout({
+        email: payout.teacher.email,
+        userName: this.teacherDisplayName(payout.teacher),
+        status: updated.status as TeacherPayoutNotifyStatus,
+        amountLkr: asNumber(updated.amountLkr),
+        periodLabel: this.periodLabel(payout.period.periodStart),
+        attemptCount: share?.attemptCount ?? null,
+        reference: updated.reference,
+      });
+    }
 
     return {
       id: updated.id,
