@@ -1004,6 +1004,7 @@ export class QuizService {
         quizId,
         guestLeadId: guestLead.id,
         studentId: null,
+        teacherUserId: quiz.createdById,
         resultToken: randomUUID(),
         expiresAt,
         secondsRemaining,
@@ -1680,6 +1681,7 @@ export class QuizService {
       data: {
         quizId,
         studentId,
+        teacherUserId: quiz.createdById,
         resultToken: randomUUID(),
         expiresAt,
         secondsRemaining,

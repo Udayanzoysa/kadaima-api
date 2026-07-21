@@ -43,15 +43,20 @@ export class SettingsService {
     return {
       monthlyStudentFeeLkr: billing.monthlyStudentFeeLkr,
       paymentMode: billing.paymentMode,
+      platformPct: billing.platformPct,
+      teacherPoolPct: billing.teacherPoolPct,
       updatedAt: row.updatedAt,
     };
   }
 
   async updateBillingSettings(dto: UpdateBillingSettingsDto, updatedBy?: string) {
-    await this.ensureRow();
+    const row = await this.ensureRow();
+    const current = mergeBilling(row.billing);
     const billing = mergeBilling({
       monthlyStudentFeeLkr: dto.monthlyStudentFeeLkr,
       paymentMode: dto.paymentMode,
+      platformPct: dto.platformPct ?? current.platformPct,
+      teacherPoolPct: dto.teacherPoolPct ?? current.teacherPoolPct,
     });
     await this.prisma.systemSetting.update({
       where: { id: SETTINGS_ID },

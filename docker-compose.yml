@@ -23,7 +23,8 @@ services:
     environment:
       DATABASE_URL: postgresql://myuser:udaya96@db:5432/kadaimadb
       BACKUP_RETENTION_COUNT: "14"
-      BACKUP_CRON_ENABLED: "false"    ports:
+      BACKUP_CRON_ENABLED: "false"
+    ports:
       - "4000:4000"
     volumes:
       # Persist quiz/question image uploads across container restarts

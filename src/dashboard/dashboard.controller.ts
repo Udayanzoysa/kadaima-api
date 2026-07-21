@@ -1,14 +1,16 @@
-import { Controller, Get, UseGuards, Req } from '@nestjs/common';
+import { Controller, Get, Query, UseGuards, Req } from '@nestjs/common';
 import {
   ApiTags,
   ApiOperation,
   ApiBearerAuth,
   ApiResponse,
+  ApiQuery,
 } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PrismaService } from '../prisma/prisma.service';
 import { AbilityFactory } from '../auth/casl/ability.factory';
 import { Action, Subject } from '@prisma/client';
+import { DashboardService } from './dashboard.service';
 
 @ApiTags('Dashboard Engine')
 @ApiBearerAuth()
@@ -18,6 +20,7 @@ export class DashboardController {
   constructor(
     private prisma: PrismaService,
     private abilityFactory: AbilityFactory,
+    private dashboardService: DashboardService,
   ) {}
 
   @Get('permissions')
@@ -75,42 +78,41 @@ export class DashboardController {
 
   @Get('stats')
   @ApiOperation({
-    summary: 'Retrieves dynamic dashboard analytics metrics scoped by role',
+    summary: 'Retrieves dashboard KPI counts scoped by role',
   })
   @ApiResponse({ status: 200, description: 'Stats compiled and returned.' })
   async getStats(@Req() req: any) {
-    const userRole = req.user.role;
-    const workspaceId = req.user.workspaceId;
+    return this.dashboardService.getStats(req.user);
+  }
 
-    if (userRole === 'SUPER_ADMIN') {
-      const workspace = await this.prisma.workspace.findUnique({
-        where: { id: workspaceId },
-        include: { subWorkspaces: true },
-      });
-
-      const workspaceIds = [
-        workspaceId,
-        ...(workspace?.subWorkspaces.map((w) => w.id) || []),
-      ];
-
-      const [totalWorkspacesCount, activeUsersCount] =
-        await Promise.all([
-          this.prisma.workspace.count({ where: { parentId: workspaceId } }),
-          this.prisma.user.count({
-            where: { workspaceId: { in: workspaceIds }, status: 'Active' },
-          }),
-        ]);
-
-      return {
-        userType: 'Admin',
-        totalWorkspacesCount,
-        activeUsersCount,
-      };
-    } else {
-      return {
-        userType: 'Customer',
-      };
-    }
+  @Get('overview')
+  @ApiOperation({
+    summary:
+      'Full overview: metrics, 6-month trend, paginated payments / teachers / quizzes',
+  })
+  @ApiQuery({ name: 'paymentsPage', required: false })
+  @ApiQuery({ name: 'paymentsPageSize', required: false })
+  @ApiQuery({ name: 'teachersPage', required: false })
+  @ApiQuery({ name: 'teachersPageSize', required: false })
+  @ApiQuery({ name: 'quizzesPage', required: false })
+  @ApiQuery({ name: 'quizzesPageSize', required: false })
+  async getOverview(
+    @Req() req: any,
+    @Query('paymentsPage') paymentsPage?: string,
+    @Query('paymentsPageSize') paymentsPageSize?: string,
+    @Query('teachersPage') teachersPage?: string,
+    @Query('teachersPageSize') teachersPageSize?: string,
+    @Query('quizzesPage') quizzesPage?: string,
+    @Query('quizzesPageSize') quizzesPageSize?: string,
+  ) {
+    return this.dashboardService.getOverview(req.user, {
+      paymentsPage: paymentsPage ? Number(paymentsPage) : undefined,
+      paymentsPageSize: paymentsPageSize ? Number(paymentsPageSize) : undefined,
+      teachersPage: teachersPage ? Number(teachersPage) : undefined,
+      teachersPageSize: teachersPageSize ? Number(teachersPageSize) : undefined,
+      quizzesPage: quizzesPage ? Number(quizzesPage) : undefined,
+      quizzesPageSize: quizzesPageSize ? Number(quizzesPageSize) : undefined,
+    });
   }
 
   @Get('menu')

@@ -124,6 +124,20 @@ enum SlipSubmissionStatus {
   Rejected
 }
 
+enum RevenuePeriodStatus {
+  Open
+  Calculating
+  Settled
+  Paid
+}
+
+enum TeacherPayoutStatus {
+  Pending
+  Approved
+  Paid
+  Held
+}
+
 enum PasswordResetChannel {
   EMAIL
   SMS
@@ -202,6 +216,10 @@ model User {
   teacherProfile     TeacherProfile?
   auditLogs          AuditLog[]
   databaseBackups    DatabaseBackup[]
+  revenueShares      TeacherRevenueShare[] @relation("TeacherRevenueShares")
+  teacherPayouts     TeacherPayout[]       @relation("TeacherPayouts")
+  payoutProfile      TeacherPayoutProfile?
+  attemptsAsTeacher  QuizAttempt[]         @relation("AttemptTeacher")
 
   @@index([workspaceId])
   @@index([workspaceId, status])
@@ -785,6 +803,9 @@ model QuizAttempt {
   student          User?         @relation("StudentAttempts", fields: [studentId], references: [id], onDelete: SetNull)
   guestLeadId      String?       @map("guest_lead_id") @db.Uuid
   guestLead        GuestLead?    @relation(fields: [guestLeadId], references: [id], onDelete: Cascade)
+  /// Denormalized quiz owner for revenue settlement (set at attempt start).
+  teacherUserId    String?       @map("teacher_user_id") @db.Uuid
+  teacher          User?         @relation("AttemptTeacher", fields: [teacherUserId], references: [id], onDelete: SetNull)
   resultToken      String?       @unique @map("result_token")
   startedAt        DateTime      @default(now()) @map("started_at")
   expiresAt        DateTime      @map("expires_at")
@@ -802,7 +823,83 @@ model QuizAttempt {
   @@index([quizId])
   @@index([studentId])
   @@index([guestLeadId])
+  @@index([teacherUserId])
+  @@index([submittedAt, status])
+  @@index([teacherUserId, submittedAt])
   @@map("quiz_attempts")
+}
+
+/// One settlement window (typically a calendar month).
+model RevenuePeriod {
+  id                    String              @id @default(uuid()) @db.Uuid
+  periodStart           DateTime            @map("period_start")
+  periodEnd             DateTime            @map("period_end")
+  grossRevenueLkr       Decimal             @default(0) @map("gross_revenue_lkr") @db.Decimal(12, 2)
+  platformShareLkr      Decimal             @default(0) @map("platform_share_lkr") @db.Decimal(12, 2)
+  teacherPoolLkr        Decimal             @default(0) @map("teacher_pool_lkr") @db.Decimal(12, 2)
+  totalBillableAttempts Int                 @default(0) @map("total_billable_attempts")
+  status                RevenuePeriodStatus @default(Open)
+  calculatedAt          DateTime?           @map("calculated_at")
+  settledAt             DateTime?           @map("settled_at")
+  notes                 String?
+  createdAt             DateTime            @default(now()) @map("created_at")
+  updatedAt             DateTime            @updatedAt @map("updated_at")
+
+  teacherShares TeacherRevenueShare[]
+  payouts       TeacherPayout[]
+
+  @@unique([periodStart])
+  @@index([status])
+  @@map("revenue_periods")
+}
+
+model TeacherRevenueShare {
+  id            String        @id @default(uuid()) @db.Uuid
+  periodId      String        @map("period_id") @db.Uuid
+  period        RevenuePeriod @relation(fields: [periodId], references: [id], onDelete: Cascade)
+  teacherUserId String        @map("teacher_user_id") @db.Uuid
+  teacher       User          @relation("TeacherRevenueShares", fields: [teacherUserId], references: [id], onDelete: Cascade)
+  attemptCount  Int           @map("attempt_count")
+  shareRatio    Decimal       @map("share_ratio") @db.Decimal(12, 8)
+  amountLkr     Decimal       @map("amount_lkr") @db.Decimal(12, 2)
+  createdAt     DateTime      @default(now()) @map("created_at")
+
+  @@unique([periodId, teacherUserId])
+  @@index([teacherUserId])
+  @@map("teacher_revenue_shares")
+}
+
+model TeacherPayout {
+  id            String              @id @default(uuid()) @db.Uuid
+  periodId      String              @map("period_id") @db.Uuid
+  period        RevenuePeriod       @relation(fields: [periodId], references: [id], onDelete: Cascade)
+  teacherUserId String              @map("teacher_user_id") @db.Uuid
+  teacher       User                @relation("TeacherPayouts", fields: [teacherUserId], references: [id], onDelete: Cascade)
+  amountLkr     Decimal             @map("amount_lkr") @db.Decimal(12, 2)
+  status        TeacherPayoutStatus @default(Pending)
+  paidAt        DateTime?           @map("paid_at")
+  reference     String?
+  createdAt     DateTime            @default(now()) @map("created_at")
+  updatedAt     DateTime            @updatedAt @map("updated_at")
+
+  @@unique([periodId, teacherUserId])
+  @@index([teacherUserId])
+  @@index([status])
+  @@map("teacher_payouts")
+}
+
+model TeacherPayoutProfile {
+  id            String   @id @default(uuid()) @db.Uuid
+  userId        String   @unique @map("user_id") @db.Uuid
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accountName   String?  @map("account_name") @db.VarChar(255)
+  bankName      String?  @map("bank_name") @db.VarChar(255)
+  accountNumber String?  @map("account_number") @db.VarChar(64)
+  branch        String?  @db.VarChar(255)
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@map("teacher_payout_profiles")
 }
 
 model StudentResponse {

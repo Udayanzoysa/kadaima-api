@@ -22,6 +22,7 @@ import { TeachersModule } from './teachers/teachers.module';
 import { AuditModule } from './audit/audit.module';
 import { SupportChatModule } from './support-chat/support-chat.module';
 import { BackupModule } from './backup/backup.module';
+import { RevenueModule } from './revenue/revenue.module';
 import { envValidationSchema } from './config/env.validation';
 
 @Module({
@@ -54,6 +55,7 @@ import { envValidationSchema } from './config/env.validation';
     AuditModule,
     SupportChatModule,
     BackupModule,
+    RevenueModule,
     ScheduleModule.forRoot(),
   ],
   controllers: [AppController],
