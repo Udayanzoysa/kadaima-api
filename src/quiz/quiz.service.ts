@@ -306,26 +306,16 @@ export class QuizService {
 
     const quizzes = await this.prisma.quiz.findMany({
       where: { id: { in: ids } },
-      include: { _count: { select: { attempts: true } } },
+      select: { id: true },
     });
 
     let deleted = 0;
-    let archived = 0;
-
     for (const quiz of quizzes) {
-      if (quiz._count.attempts > 0) {
-        await this.prisma.quiz.update({
-          where: { id: quiz.id },
-          data: { status: QuizStatus.Archived },
-        });
-        archived += 1;
-      } else {
-        await this.prisma.quiz.delete({ where: { id: quiz.id } });
-        deleted += 1;
-      }
+      await this.prisma.quiz.delete({ where: { id: quiz.id } });
+      deleted += 1;
     }
 
-    return { deleted, archived, total: quizzes.length };
+    return { deleted, archived: 0, total: quizzes.length };
   }
 
   /** Shape quizQuestions into a flat `questions` array + optional `sections` for API consumers. */
@@ -582,6 +572,8 @@ export class QuizService {
       orderBy: { createdAt: 'desc' },
       select: {
         id: true,
+        language: true,
+        languages: true,
         title: true,
         description: true,
         coverImageUrl: true,
@@ -1564,27 +1556,10 @@ export class QuizService {
     return this.getQuizById(id);
   }
 
-  /**
-   * Hard-deletes only when there are no attempts; otherwise archives.
-   */
+  /** Permanently deletes a quiz and cascaded attempts / unlocks / payments. */
   async deleteQuiz(id: string) {
-    const quiz = await this.prisma.quiz.findUnique({
-      where: { id },
-      include: { _count: { select: { attempts: true } } },
-    });
+    const quiz = await this.prisma.quiz.findUnique({ where: { id } });
     if (!quiz) throw new NotFoundException('Quiz not found');
-
-    if (quiz._count.attempts > 0) {
-      await this.prisma.quiz.update({
-        where: { id },
-        data: { status: QuizStatus.Archived },
-      });
-      return {
-        archived: true,
-        message: 'Quiz has attempts and was archived instead of deleted.',
-        quiz: await this.getQuizById(id),
-      };
-    }
 
     await this.prisma.quiz.delete({ where: { id } });
     return { deleted: true, id };

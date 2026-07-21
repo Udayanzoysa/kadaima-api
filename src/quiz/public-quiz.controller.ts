@@ -1,6 +1,9 @@
 import { Body, Controller, Get, Param, Post, Put, Query, BadRequestException } from '@nestjs/common';
 import { ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { QuizService } from './quiz.service';
+import { AiQuizReviewService } from './ai-quiz-review.service';
+import { AiQuizReviewDto } from './dto/ai-quiz-review.dto';
 import { StartGuestAttemptDto } from './dto/start-guest-attempt.dto';
 import { SaveGuestProgressDto } from './dto/save-guest-progress.dto';
 import { HeartbeatDto } from './dto/heartbeat.dto';
@@ -13,6 +16,7 @@ export class PublicQuizController {
   constructor(
     private quizService: QuizService,
     private gradingService: GradingService,
+    private aiQuizReviewService: AiQuizReviewService,
   ) {}
 
   @Get()
@@ -106,6 +110,19 @@ export class PublicQuizController {
   @ApiOperation({ summary: 'Get a finalized quiz result by public token (no auth)' })
   getResult(@Param('resultToken') resultToken: string) {
     return this.quizService.getAttemptByResultToken(resultToken);
+  }
+
+  @Post('results/:resultToken/ai-review')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @ApiOperation({
+    summary:
+      'Kadaima Virtual Teacher — personalized review of incorrect answers (locale: en|si|ta)',
+  })
+  aiReviewByToken(
+    @Param('resultToken') resultToken: string,
+    @Body() dto: AiQuizReviewDto,
+  ) {
+    return this.aiQuizReviewService.reviewByResultToken(resultToken, dto.locale);
   }
 
   @Get('attempts/:attemptId')

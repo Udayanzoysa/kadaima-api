@@ -99,26 +99,16 @@ export class CourseService {
 
     const courses = await this.prisma.course.findMany({
       where: { id: { in: ids } },
-      include: { _count: { select: { quizzes: true } } },
+      select: { id: true },
     });
 
     let deleted = 0;
-    let archived = 0;
-
     for (const course of courses) {
-      if (course._count.quizzes > 0) {
-        await this.prisma.course.update({
-          where: { id: course.id },
-          data: { status: CourseStatus.Archived },
-        });
-        archived += 1;
-      } else {
-        await this.prisma.course.delete({ where: { id: course.id } });
-        deleted += 1;
-      }
+      await this.prisma.course.delete({ where: { id: course.id } });
+      deleted += 1;
     }
 
-    return { deleted, archived, total: courses.length };
+    return { deleted, archived: 0, total: courses.length };
   }
 
   async getCourse(id: string) {
@@ -178,22 +168,13 @@ export class CourseService {
     });
   }
 
+  /** Permanently deletes a course (cascades modules + quizzes). */
   async deleteCourse(id: string) {
-    const course = await this.prisma.course.findUnique({
-      where: { id },
-      include: { _count: { select: { quizzes: true } } },
-    });
+    const course = await this.prisma.course.findUnique({ where: { id } });
     if (!course) throw new NotFoundException('Course not found');
 
-    if (course._count.quizzes > 0) {
-      return this.prisma.course.update({
-        where: { id },
-        data: { status: CourseStatus.Archived },
-      });
-    }
-
     await this.prisma.course.delete({ where: { id } });
-    return { deleted: true };
+    return { deleted: true, id };
   }
 
   async listModules(courseId: string, status?: CourseStatus) {

@@ -25,8 +25,10 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
 import type { Response } from 'express';
-import { AuditAction, CourseStatus } from '@prisma/client';
+import { AuditAction, CourseStatus, Action, Subject } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { PoliciesGuard } from '../auth/guards/policies.guard';
+import { CheckPolicies } from '../auth/decorators/policies.decorator';
 import { Audit } from '../audit/audit-log.decorator';
 import { CourseService } from './course.service';
 import {
@@ -77,8 +79,12 @@ export class CourseController {
   }
 
   @Post('bulk/delete')
+  @UseGuards(PoliciesGuard)
+  @CheckPolicies({ action: Action.DELETE, subject: Subject.QUIZZES })
   @Audit('COURSES', AuditAction.DELETE)
-  @ApiOperation({ summary: 'Bulk delete courses (archives if quizzes exist)' })
+  @ApiOperation({
+    summary: 'Permanently delete courses (cascades modules/quizzes)',
+  })
   bulkDeleteCourses(@Body() dto: BulkCourseIdsDto) {
     return this.courseService.bulkDeleteCourses(dto.ids);
   }
@@ -148,8 +154,10 @@ export class CourseController {
   }
 
   @Delete(':id')
+  @UseGuards(PoliciesGuard)
+  @CheckPolicies({ action: Action.DELETE, subject: Subject.QUIZZES })
   @Audit('COURSES', AuditAction.DELETE)
-  @ApiOperation({ summary: 'Delete course (archives if quizzes exist)' })
+  @ApiOperation({ summary: 'Permanently delete a course (cascades modules/quizzes)' })
   deleteCourse(@Param('id') id: string) {
     return this.courseService.deleteCourse(id);
   }
@@ -190,8 +198,10 @@ export class CourseController {
   }
 
   @Post(':courseId/modules/bulk/delete')
+  @UseGuards(PoliciesGuard)
+  @CheckPolicies({ action: Action.DELETE, subject: Subject.QUIZZES })
   @Audit('COURSES', AuditAction.DELETE)
-  @ApiOperation({ summary: 'Bulk delete modules' })
+  @ApiOperation({ summary: 'Permanently bulk-delete modules' })
   bulkDeleteModules(
     @Param('courseId') courseId: string,
     @Body() dto: BulkModuleIdsDto,
@@ -282,8 +292,10 @@ export class CourseController {
   }
 
   @Delete(':courseId/modules/:id')
+  @UseGuards(PoliciesGuard)
+  @CheckPolicies({ action: Action.DELETE, subject: Subject.QUIZZES })
   @Audit('COURSES', AuditAction.DELETE)
-  @ApiOperation({ summary: 'Delete a module' })
+  @ApiOperation({ summary: 'Permanently delete a module' })
   deleteModule(
     @Param('courseId') courseId: string,
     @Param('id') id: string,

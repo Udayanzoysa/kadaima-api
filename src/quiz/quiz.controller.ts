@@ -29,6 +29,8 @@ import { extname, join } from 'path';
 import { existsSync, mkdirSync } from 'fs';
 import type { Response } from 'express';
 import { QuizService } from './quiz.service';
+import { AiQuizReviewService } from './ai-quiz-review.service';
+import { AiQuizReviewDto } from './dto/ai-quiz-review.dto';
 import { CreateQuizDto } from './dto/create-quiz.dto';
 import {
   BulkQuizIdsDto,
@@ -38,8 +40,11 @@ import {
 } from './dto/update-quiz.dto';
 import { HeartbeatDto } from './dto/heartbeat.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-import { AuditAction, QuizStatus } from '@prisma/client';
+import { PoliciesGuard } from '../auth/guards/policies.guard';
+import { CheckPolicies } from '../auth/decorators/policies.decorator';
+import { Action, AuditAction, QuizStatus, Subject } from '@prisma/client';
 import { Audit } from '../audit/audit-log.decorator';
+import { Throttle } from '@nestjs/throttler';
 
 const quizUploadDir = join(process.cwd(), 'uploads', 'quizzes');
 if (!existsSync(quizUploadDir)) {
@@ -51,7 +56,10 @@ if (!existsSync(quizUploadDir)) {
 @UseGuards(JwtAuthGuard)
 @Controller('quizzes')
 export class QuizController {
-  constructor(private quizService: QuizService) {}
+  constructor(
+    private quizService: QuizService,
+    private aiQuizReviewService: AiQuizReviewService,
+  ) {}
 
   @Get('courses')
   @ApiOperation({ summary: 'List all courses' })
@@ -104,6 +112,19 @@ export class QuizController {
     return this.quizService.getAttemptForStudent(attemptId);
   }
 
+  @Post('attempts/:attemptId/ai-review')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @ApiOperation({
+    summary:
+      'Kadaima Virtual Teacher — personalized review of incorrect answers (locale: en|si|ta)',
+  })
+  aiReview(
+    @Param('attemptId') attemptId: string,
+    @Body() dto: AiQuizReviewDto,
+  ) {
+    return this.aiQuizReviewService.reviewByAttemptId(attemptId, dto.locale);
+  }
+
   @Post('attempts/:attemptId/heartbeat')
   @ApiOperation({
     summary:
@@ -147,8 +168,12 @@ export class QuizController {
   }
 
   @Post('bulk/delete')
+  @UseGuards(PoliciesGuard)
+  @CheckPolicies({ action: Action.DELETE, subject: Subject.QUIZZES })
   @Audit('QUIZZES', AuditAction.DELETE)
-  @ApiOperation({ summary: 'Bulk delete quizzes (archives if attempts exist)' })
+  @ApiOperation({
+    summary: 'Permanently delete quizzes (requires DELETE or MANAGE on Quizzes)',
+  })
   bulkDelete(@Body() dto: BulkQuizIdsDto) {
     return this.quizService.bulkDelete(dto.ids);
   }
@@ -230,8 +255,12 @@ export class QuizController {
   }
 
   @Delete(':id')
+  @UseGuards(PoliciesGuard)
+  @CheckPolicies({ action: Action.DELETE, subject: Subject.QUIZZES })
   @Audit('QUIZZES', AuditAction.DELETE)
-  @ApiOperation({ summary: 'Delete quiz (archives if attempts exist)' })
+  @ApiOperation({
+    summary: 'Permanently delete a quiz (requires DELETE or MANAGE on Quizzes)',
+  })
   deleteQuiz(@Param('id') id: string) {
     return this.quizService.deleteQuiz(id);
   }

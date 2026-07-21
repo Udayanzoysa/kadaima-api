@@ -118,26 +118,16 @@ export class QuestionService {
 
     const questions = await this.prisma.question.findMany({
       where: { id: { in: ids } },
-      include: { _count: { select: { quizLinks: true, responses: true } } },
+      select: { id: true },
     });
 
     let deleted = 0;
-    let archived = 0;
-
     for (const question of questions) {
-      if (question._count.responses > 0 || question._count.quizLinks > 0) {
-        await this.prisma.question.update({
-          where: { id: question.id },
-          data: { status: QuestionStatus.Archived },
-        });
-        archived += 1;
-      } else {
-        await this.prisma.question.delete({ where: { id: question.id } });
-        deleted += 1;
-      }
+      await this.hardDeleteQuestion(question.id);
+      deleted += 1;
     }
 
-    return { deleted, archived, total: questions.length };
+    return { deleted, archived: 0, total: questions.length };
   }
 
   async getById(id: string) {
@@ -330,30 +320,25 @@ export class QuestionService {
   }
 
   /**
-   * Hard-deletes only when unused; otherwise archives.
+   * Permanently deletes a question (and links / responses).
+   * Clears selectedChoiceId first to avoid AnswerChoice Restrict FK issues.
    */
   async delete(id: string) {
-    const question = await this.prisma.question.findUnique({
-      where: { id },
-      include: { _count: { select: { quizLinks: true, responses: true } } },
-    });
+    const question = await this.prisma.question.findUnique({ where: { id } });
     if (!question) throw new NotFoundException('Question not found');
 
-    if (question._count.responses > 0 || question._count.quizLinks > 0) {
-      await this.prisma.question.update({
-        where: { id },
-        data: { status: QuestionStatus.Archived },
-      });
-      return {
-        archived: true,
-        message:
-          'Question is linked to quizzes or has responses and was archived instead of deleted.',
-        question: await this.getById(id),
-      };
-    }
-
-    await this.prisma.question.delete({ where: { id } });
+    await this.hardDeleteQuestion(id);
     return { deleted: true, id };
+  }
+
+  private async hardDeleteQuestion(id: string) {
+    await this.prisma.$transaction(async (tx) => {
+      await tx.studentResponse.updateMany({
+        where: { questionId: id },
+        data: { selectedChoiceId: null },
+      });
+      await tx.question.delete({ where: { id } });
+    });
   }
 
   private toExportQuestion(q: {
@@ -489,21 +474,25 @@ export class QuestionService {
       si: row.question_si || '',
       ta: row.question_ta || '',
     });
-    if (!questionText.en.trim()) {
-      throw new BadRequestException(`Row ${rowNum}: question_en is required`);
+    if (
+      !questionText.en.trim() &&
+      !questionText.si.trim() &&
+      !questionText.ta.trim()
+    ) {
+      throw new BadRequestException(
+        `Row ${rowNum}: question text required in at least one language (question_en / question_si / question_ta)`,
+      );
     }
 
     const choices: ExportQuestion['choices'] = [];
     const correctLetter = (row.correct || '').trim().toLowerCase();
     for (const letter of OPTION_LETTERS) {
       const en = row[`option_${letter}`] || row[`option_${letter}_en`] || '';
-      if (!en.trim()) continue;
+      const si = row[`option_${letter}_si`] || '';
+      const ta = row[`option_${letter}_ta`] || '';
+      if (!en.trim() && !si.trim() && !ta.trim()) continue;
       choices.push({
-        choiceText: asLocalized({
-          en,
-          si: row[`option_${letter}_si`] || '',
-          ta: row[`option_${letter}_ta`] || '',
-        }),
+        choiceText: asLocalized({ en, si, ta }),
         isCorrect: correctLetter === letter,
       });
     }

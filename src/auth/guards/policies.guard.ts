@@ -1,5 +1,6 @@
 import { Injectable, CanActivate, ExecutionContext } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
+import { Action } from '@prisma/client';
 import { AbilityFactory } from '../casl/ability.factory';
 import {
   CHECK_POLICIES_KEY,
@@ -45,9 +46,14 @@ export class PoliciesGuard implements CanActivate {
     // Create the dynamic capability matrix for the requesting user
     const ability = this.abilityFactory.createForUser(dbUser);
 
-    // Enforce every validation handler evaluates to true
-    return policyHandlers.every((handler) =>
-      ability.can(handler.action, handler.subject),
+    // Enforce every validation handler evaluates to true.
+    // MANAGE (and SUPER_ADMIN manage all) also satisfies specific actions like DELETE.
+    return policyHandlers.every(
+      (handler) =>
+        ability.can(handler.action, handler.subject) ||
+        ability.can(Action.MANAGE, handler.subject) ||
+        ability.can('manage' as any, handler.subject as any) ||
+        ability.can('manage' as any, 'all'),
     );
   }
 }

@@ -29,8 +29,10 @@ import { diskStorage, memoryStorage } from 'multer';
 import { extname, join } from 'path';
 import { existsSync, mkdirSync } from 'fs';
 import type { Response } from 'express';
-import { AuditAction, QuestionStatus } from '@prisma/client';
+import { AuditAction, QuestionStatus, Action, Subject } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { PoliciesGuard } from '../auth/guards/policies.guard';
+import { CheckPolicies } from '../auth/decorators/policies.decorator';
 import { Audit } from '../audit/audit-log.decorator';
 import { QuestionService } from './question.service';
 import { AiQuestionImportService } from './ai-question-import.service';
@@ -85,8 +87,10 @@ export class QuestionController {
   }
 
   @Post('bulk/delete')
+  @UseGuards(PoliciesGuard)
+  @CheckPolicies({ action: Action.DELETE, subject: Subject.QUIZZES })
   @Audit('QUESTIONS', AuditAction.DELETE)
-  @ApiOperation({ summary: 'Bulk delete questions (archives if in use)' })
+  @ApiOperation({ summary: 'Permanently bulk-delete questions' })
   bulkDelete(@Body() dto: BulkQuestionIdsDto) {
     return this.questionService.bulkDelete(dto.ids);
   }
@@ -224,8 +228,10 @@ export class QuestionController {
   }
 
   @Delete(':id')
+  @UseGuards(PoliciesGuard)
+  @CheckPolicies({ action: Action.DELETE, subject: Subject.QUIZZES })
   @Audit('QUESTIONS', AuditAction.DELETE)
-  @ApiOperation({ summary: 'Delete question (archives if in use)' })
+  @ApiOperation({ summary: 'Permanently delete a question' })
   delete(@Param('id') id: string) {
     return this.questionService.delete(id);
   }
