@@ -50,6 +50,12 @@ export class CreateBankQuestionDto {
   @IsObject()
   config?: Record<string, unknown>;
 
+  @ApiPropertyOptional({ type: [String], description: 'Custom tags/labels' })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  tags?: string[];
+
   @ApiProperty({ type: [CreateAnswerChoiceDto], required: false })
   @IsOptional()
   @IsArray()
@@ -90,6 +96,12 @@ export class UpdateBankQuestionDto {
   @IsOptional()
   @IsObject()
   config?: Record<string, unknown>;
+
+  @ApiPropertyOptional({ type: [String] })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  tags?: string[];
 
   @ApiProperty({ type: [CreateAnswerChoiceDto], required: false })
   @ValidateNested({ each: true })

@@ -34,6 +34,7 @@ type ExportQuestion = {
   status: QuestionStatus;
   imageUrl: string | null;
   config: Record<string, unknown>;
+  tags?: string[];
   choices: Array<{
     choiceText: Localized;
     isCorrect: boolean;
@@ -49,9 +50,18 @@ function toJson(value: { en: string; si: string; ta: string }): Prisma.InputJson
 export class QuestionService {
   constructor(private prisma: PrismaService) {}
 
-  async list(status?: QuestionStatus) {
+  async list(status?: QuestionStatus, filters?: { tag?: string; quizId?: string }) {
+    const where: Prisma.QuestionWhereInput = {};
+    if (status) where.status = status;
+    if (filters?.tag) {
+      where.tags = { has: filters.tag };
+    }
+    if (filters?.quizId) {
+      where.quizLinks = { some: { quizId: filters.quizId } };
+    }
+
     return this.prisma.question.findMany({
-      where: status ? { status } : undefined,
+      where,
       orderBy: { createdAt: 'desc' },
       include: {
         choices: true,
@@ -70,10 +80,20 @@ export class QuestionService {
     status?: QuestionStatus;
     page?: number;
     pageSize?: number;
+    tag?: string;
+    quizId?: string;
   }) {
     const page = Math.max(1, opts.page ?? 1);
     const pageSize = Math.min(100, Math.max(1, opts.pageSize ?? 10));
-    const where = opts.status ? { status: opts.status } : undefined;
+
+    const where: Prisma.QuestionWhereInput = {};
+    if (opts.status) where.status = opts.status;
+    if (opts.tag) {
+      where.tags = { has: opts.tag };
+    }
+    if (opts.quizId) {
+      where.quizLinks = { some: { quizId: opts.quizId } };
+    }
 
     const [total, items] = await Promise.all([
       this.prisma.question.count({ where }),
@@ -102,6 +122,21 @@ export class QuestionService {
       pageSize,
       totalPages: Math.max(1, Math.ceil(total / pageSize)),
     };
+  }
+
+  async getUniqueTags(): Promise<string[]> {
+    const questions = await this.prisma.question.findMany({
+      select: { tags: true },
+    });
+    const tagsSet = new Set<string>();
+    for (const q of questions) {
+      if (q.tags) {
+        for (const t of q.tags) {
+          tagsSet.add(t);
+        }
+      }
+    }
+    return Array.from(tagsSet).sort();
   }
 
   async bulkUpdateStatus(ids: string[], status: QuestionStatus) {
@@ -187,10 +222,11 @@ export class QuestionService {
           status: dto.status ?? QuestionStatus.Draft,
           imageUrl: dto.imageUrl ?? null,
           config: {},
+          tags: dto.tags ?? [],
           createdById: userId,
           choices:
             choices.length > 0
-              ? {
+               ? {
                   create: choices.map((choice) => ({
                     choiceText: toJson(choice.choiceText),
                     imageUrl: choice.imageUrl ?? null,
@@ -289,6 +325,7 @@ export class QuestionService {
           type: dto.type,
           points: dto.points,
           status: dto.status,
+          tags: dto.tags !== undefined ? dto.tags : undefined,
           imageUrl: dto.imageUrl === undefined ? undefined : dto.imageUrl,
           config:
             configRaw !== undefined
@@ -348,6 +385,7 @@ export class QuestionService {
     status: QuestionStatus;
     imageUrl: string | null;
     config: Prisma.JsonValue;
+    tags: string[];
     choices: Array<{
       choiceText: Prisma.JsonValue;
       isCorrect: boolean;
@@ -364,6 +402,7 @@ export class QuestionService {
         q.config && typeof q.config === 'object' && !Array.isArray(q.config)
           ? (q.config as Record<string, unknown>)
           : {},
+      tags: q.tags,
       choices: q.choices.map((c) => ({
         choiceText: asLocalized(c.choiceText),
         isCorrect: c.isCorrect,
@@ -389,12 +428,15 @@ export class QuestionService {
           type: q.type,
           points: q.points,
           status: q.status,
+          tags: (q.tags ?? []).join(', '),
           correct: '',
           accepted_answers: '',
           accepted_answers_si: '',
           accepted_answers_ta: '',
           tolerance: '',
           match_mode: '',
+          min_words: '',
+          min_sentences: '',
         };
 
         OPTION_LETTERS.forEach((letter, i) => {
@@ -421,6 +463,11 @@ export class QuestionService {
           row.accepted_answers_ta = accepted.map((a) => a.ta ?? '').filter(Boolean).join('|');
           if (typeof cfg.tolerance === 'number') row.tolerance = cfg.tolerance;
           if (typeof cfg.matchMode === 'string') row.match_mode = cfg.matchMode;
+        }
+
+        if (q.type === QuestionType.ESSAY) {
+          if (typeof cfg.minWords === 'number') row.min_words = cfg.minWords;
+          if (typeof cfg.minSentences === 'number') row.min_sentences = cfg.minSentences;
         }
 
         return row;
@@ -513,6 +560,15 @@ export class QuestionService {
       if (row.match_mode) config.matchMode = row.match_mode;
     }
 
+    if (type === QuestionType.ESSAY) {
+      if (row.min_words) config.minWords = Number(row.min_words) || undefined;
+      if (row.min_sentences) config.minSentences = Number(row.min_sentences) || undefined;
+    }
+
+    const tags = row.tags
+      ? row.tags.split(',').map((t) => t.trim()).filter(Boolean)
+      : [];
+
     return {
       questionText,
       type,
@@ -520,6 +576,7 @@ export class QuestionService {
       status: statusRaw as QuestionStatus,
       imageUrl: null,
       config,
+      tags,
       choices,
     };
   }
@@ -563,6 +620,7 @@ export class QuestionService {
           status: item.status ?? QuestionStatus.Draft,
           imageUrl: item.imageUrl ?? null,
           config: item.config ?? {},
+          tags: item.tags ?? [],
           choices: (item.choices ?? []).map((c) => ({
             choiceText: asLocalized(c.choiceText),
             isCorrect: Boolean(c.isCorrect),

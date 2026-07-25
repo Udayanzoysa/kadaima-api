@@ -1,6 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { SettingsService } from '../settings/settings.service';
+import { PrismaService } from '../prisma/prisma.service';
+import { CreateChatLeadDto } from './dto/chat-lead.dto';
+import { ChatHistoryMessageDto } from './dto/send-chat-message.dto';
 
 const SYSTEM_PROMPT = `You are "Kadaima Expert", a friendly support assistant for Kadaima — Sri Lanka's online exam and quiz portal for Scholarship, O/L, A/L, and International students.
 
@@ -25,9 +28,47 @@ const LIVE_MODEL_RE = /live|native-audio/i;
 export class SupportChatService {
   private readonly logger = new Logger(SupportChatService.name);
 
-  constructor(private readonly settingsService: SettingsService) {}
+  constructor(
+    private readonly settingsService: SettingsService,
+    private readonly prisma: PrismaService,
+  ) {}
 
-  async getReply(studentMessage: string): Promise<string> {
+  async saveLead(dto: CreateChatLeadDto) {
+    return this.prisma.chatLead.create({
+      data: {
+        name: dto.name,
+        email: dto.email,
+        mobileNumber: dto.mobileNumber,
+        age: dto.age,
+      },
+    });
+  }
+
+  async listLeads(page = 1, pageSize = 20) {
+    const skip = (page - 1) * pageSize;
+    const [items, total] = await Promise.all([
+      this.prisma.chatLead.findMany({
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: pageSize,
+      }),
+      this.prisma.chatLead.count(),
+    ]);
+
+    return {
+      items,
+      total,
+      page,
+      pageSize,
+      totalPages: Math.ceil(total / pageSize),
+    };
+  }
+
+  async getReply(
+    studentMessage: string,
+    history: ChatHistoryMessageDto[] = [],
+    lead?: CreateChatLeadDto,
+  ): Promise<string> {
     const trimmed = studentMessage.trim();
     if (!trimmed) {
       return 'Please type a question and I will help.';
@@ -66,17 +107,43 @@ export class SupportChatService {
     const genAI = new GoogleGenerativeAI(cfg.apiKey);
     const failures: string[] = [];
 
+    // Map history to Gemini's format: { role: 'user' | 'model', parts: [{ text: string }] }
+    const geminiHistory = (history || []).map((h) => ({
+      role: h.role === 'assistant' || h.role === 'model' ? 'model' : 'user',
+      parts: [{ text: h.text }],
+    }));
+
+    // Gemini requires the first turn to be 'user'. Skip any leading 'model' turns.
+    while (geminiHistory.length > 0 && geminiHistory[0].role === 'model') {
+      geminiHistory.shift();
+    }
+
     for (const modelName of modelCandidates) {
       try {
+        let systemInstruction = SYSTEM_PROMPT;
+        if (lead) {
+          systemInstruction += `\n\nActive student profile (tailor options to Sri Lankan curriculum for their age):
+- Name: ${lead.name}
+- Age: ${lead.age} years old (Suitable for Grade ${Math.max(1, lead.age - 5)})
+- Email: ${lead.email}
+- Mobile: ${lead.mobileNumber}
+Make sure you provide personalized learning options tailored to what students are currently studying in Sri Lankan schools. Format the options clearly as a numbered list (e.g. 1. Option Name) or bulleted list so they can be selected.`;
+        }
+
         const model = genAI.getGenerativeModel({
           model: modelName,
-          systemInstruction: SYSTEM_PROMPT,
+          systemInstruction,
           generationConfig: {
             temperature: 0.6,
             maxOutputTokens: 512,
           },
         });
-        const result = await model.generateContent(trimmed);
+
+        const chat = model.startChat({
+          history: geminiHistory,
+        });
+
+        const result = await chat.sendMessage(trimmed);
         const text = result.response.text()?.trim();
         if (text) {
           return text;

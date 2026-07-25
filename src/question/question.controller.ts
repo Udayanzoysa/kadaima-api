@@ -64,18 +64,24 @@ export class QuestionController {
   @ApiQuery({ name: 'status', required: false, enum: QuestionStatus })
   @ApiQuery({ name: 'page', required: false, type: Number })
   @ApiQuery({ name: 'pageSize', required: false, type: Number })
+  @ApiQuery({ name: 'tag', required: false, type: String })
+  @ApiQuery({ name: 'quizId', required: false, type: String })
   list(
     @Query('status') status?: QuestionStatus,
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
+    @Query('tag') tag?: string,
+    @Query('quizId') quizId?: string,
   ) {
     if (page === undefined && pageSize === undefined) {
-      return this.questionService.list(status);
+      return this.questionService.list(status, { tag, quizId });
     }
     return this.questionService.listPaginated({
       status,
       page: page ? Number(page) : 1,
       pageSize: pageSize ? Number(pageSize) : 10,
+      tag,
+      quizId,
     });
   }
 
@@ -205,6 +211,12 @@ export class QuestionController {
   @ApiOperation({ summary: 'Create a bank question' })
   create(@Body() dto: CreateBankQuestionDto, @Req() req: any) {
     return this.questionService.create(dto, req.user.id);
+  }
+
+  @Get('tags')
+  @ApiOperation({ summary: 'Get all unique tags in the question bank' })
+  getUniqueTags() {
+    return this.questionService.getUniqueTags();
   }
 
   @Get(':id')

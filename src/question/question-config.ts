@@ -58,9 +58,19 @@ function normalize(s: string) {
 }
 
 function gradeShortText(config: QuestionConfig, text: string): boolean {
-  const answers = (config.acceptedAnswers ?? [])
-    .map((a) => normalize(a))
-    .filter(Boolean);
+  const answers: string[] = [];
+  if (Array.isArray(config.acceptedAnswers)) {
+    for (const a of config.acceptedAnswers) {
+      if (typeof a === 'string') {
+        answers.push(normalize(a));
+      } else if (a && typeof a === 'object') {
+        const obj = a as Record<string, unknown>;
+        if (typeof obj.en === 'string' && obj.en) answers.push(normalize(obj.en));
+        if (typeof obj.si === 'string' && obj.si) answers.push(normalize(obj.si));
+        if (typeof obj.ta === 'string' && obj.ta) answers.push(normalize(obj.ta));
+      }
+    }
+  }
   if (!answers.length || !text.trim()) return false;
 
   const mode = config.matchMode ?? 'case_insensitive';
