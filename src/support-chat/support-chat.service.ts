@@ -37,9 +37,11 @@ export class SupportChatService {
     return this.prisma.chatLead.create({
       data: {
         name: dto.name,
-        email: dto.email,
+        email: dto.email || null,
         mobileNumber: dto.mobileNumber,
-        age: dto.age,
+        age: dto.age !== undefined ? dto.age : null,
+        school: dto.school || null,
+        tag: dto.tag || 'Chatbot',
       },
     });
   }
@@ -124,8 +126,8 @@ export class SupportChatService {
         if (lead) {
           systemInstruction += `\n\nActive student profile (tailor options to Sri Lankan curriculum for their age):
 - Name: ${lead.name}
-- Age: ${lead.age} years old (Suitable for Grade ${Math.max(1, lead.age - 5)})
-- Email: ${lead.email}
+- Age: ${lead.age !== undefined ? lead.age : 'N/A'} years old (Suitable for Grade ${lead.age !== undefined ? Math.max(1, lead.age - 5) : 'N/A'})
+- Email: ${lead.email || 'N/A'}
 - Mobile: ${lead.mobileNumber}
 Make sure you provide personalized learning options tailored to what students are currently studying in Sri Lankan schools. Format the options clearly as a numbered list (e.g. 1. Option Name) or bulleted list so they can be selected.`;
         }

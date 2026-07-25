@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsEmail, IsNotEmpty, IsNumber, IsString, Min } from 'class-validator';
+import { IsEmail, IsNotEmpty, IsNumber, IsOptional, IsString, Min } from 'class-validator';
 
 export class CreateChatLeadDto {
   @ApiProperty({ example: 'Nimal Silva' })
@@ -7,17 +7,29 @@ export class CreateChatLeadDto {
   @IsNotEmpty()
   name: string;
 
-  @ApiProperty({ example: 'nimal@gmail.com' })
+  @ApiProperty({ example: 'nimal@gmail.com', required: false })
+  @IsOptional()
   @IsEmail()
-  email: string;
+  email?: string;
 
   @ApiProperty({ example: '0771234567' })
   @IsString()
   @IsNotEmpty()
   mobileNumber: string;
 
-  @ApiProperty({ example: 10 })
+  @ApiProperty({ example: 10, required: false })
+  @IsOptional()
   @IsNumber()
   @Min(1)
-  age: number;
+  age?: number;
+
+  @ApiProperty({ example: 'Royal College', required: false })
+  @IsOptional()
+  @IsString()
+  school?: string;
+
+  @ApiProperty({ example: 'Chatbot', required: false })
+  @IsOptional()
+  @IsString()
+  tag?: string;
 }

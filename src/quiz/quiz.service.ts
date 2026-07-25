@@ -956,6 +956,37 @@ export class QuizService {
       },
     });
 
+    try {
+      const existingLead = await this.prisma.chatLead.findFirst({
+        where: {
+          mobileNumber: lead.mobileNumber,
+          tag: 'Quiz Attempt',
+        },
+      });
+      if (existingLead) {
+        await this.prisma.chatLead.update({
+          where: { id: existingLead.id },
+          data: {
+            name: lead.studentName,
+            school: lead.school,
+            email: lead.email || null,
+          },
+        });
+      } else {
+        await this.prisma.chatLead.create({
+          data: {
+            name: lead.studentName,
+            school: lead.school,
+            mobileNumber: lead.mobileNumber,
+            email: lead.email || null,
+            tag: 'Quiz Attempt',
+          },
+        });
+      }
+    } catch (err) {
+      console.error('Failed to log guest attempt ChatLead:', err);
+    }
+
     const attempts = await this.prisma.quizAttempt.findMany({
       where: { quizId, guestLeadId: guestLead.id },
       orderBy: { startedAt: 'desc' },

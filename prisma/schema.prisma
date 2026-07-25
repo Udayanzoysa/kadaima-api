@@ -926,9 +926,11 @@ model StudentResponse {
 model ChatLead {
   id           String   @id @default(uuid()) @db.Uuid
   name         String
-  email        String
+  email        String?
   mobileNumber String   @map("mobile_number")
-  age          Int
+  age          Int?
+  school       String?
+  tag          String   @default("Chatbot")
   createdAt    DateTime @default(now()) @map("created_at")
 
   @@map("chat_leads")
