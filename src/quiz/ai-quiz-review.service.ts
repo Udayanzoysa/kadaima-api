@@ -61,6 +61,16 @@ const RESPONSE_SCHEMA: ResponseSchema = {
 
 const LIVE_MODEL_RE = /live|native-audio/i;
 
+/**
+ * Sinhala and Tamil cost several times more output tokens than the same text in
+ * English, so the review of a badly failed paper can outgrow any token budget.
+ * Cap the items sent per request to keep the JSON response complete.
+ */
+const MAX_REVIEW_ITEMS = 12;
+
+/** Generous ceiling: Gemini 3 Flash allows 64k output, and thinking tokens count against it. */
+const MAX_OUTPUT_TOKENS = 32768;
+
 const LANG_NAME: Record<ReviewLocale, string> = {
   en: 'English',
   si: 'Sinhala (සිංහල script)',
@@ -312,25 +322,29 @@ Rules:
 - Do not invent facts beyond the question content.
 - summary: 1–2 sentences overview of weak spots.`;
 
+    const reviewable = incorrect.slice(0, MAX_REVIEW_ITEMS);
+
     const userPayload = {
       locale,
       scorePercent: score,
       totalQuestions: total,
       incorrectCount: wrongCount,
-      incorrectItems: incorrect,
+      reviewedCount: reviewable.length,
+      incorrectItems: reviewable,
     };
 
     const genAI = new GoogleGenerativeAI(cfg.apiKey);
     const failures: string[] = [];
 
     for (const modelName of modelCandidates) {
+      let finishReason: string | undefined;
       try {
         const model = genAI.getGenerativeModel({
           model: modelName,
           systemInstruction: systemPrompt,
           generationConfig: {
             temperature: 0.4,
-            maxOutputTokens: 4096,
+            maxOutputTokens: MAX_OUTPUT_TOKENS,
             responseMimeType: 'application/json',
             responseSchema: RESPONSE_SCHEMA,
           },
@@ -339,9 +353,10 @@ Rules:
         const result = await model.generateContent(
           `Review these incorrect answers and return JSON only:\n${JSON.stringify(userPayload)}`,
         );
+        finishReason = result.response.candidates?.[0]?.finishReason;
         const raw = result.response.text()?.trim();
         if (!raw) {
-          failures.push(`${modelName}: empty response`);
+          failures.push(`${modelName}: empty response (finishReason=${finishReason})`);
           continue;
         }
 
@@ -350,11 +365,11 @@ Rules:
           items?: Array<Partial<AiQuizReviewItem>>;
         };
 
-        const allowedIds = new Set(incorrect.map((i) => i.questionId));
+        const allowedIds = new Set(reviewable.map((i) => i.questionId));
         const items: AiQuizReviewItem[] = (parsed.items ?? [])
           .filter((item) => item.questionId && allowedIds.has(String(item.questionId)))
           .map((item) => {
-            const fallback = incorrect.find((i) => i.questionId === item.questionId)!;
+            const fallback = reviewable.find((i) => i.questionId === item.questionId)!;
             return {
               questionId: String(item.questionId),
               questionNumber: Number(item.questionNumber) || fallback.questionNumber,
@@ -383,8 +398,9 @@ Rules:
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        failures.push(`${modelName}: ${message}`);
-        this.logger.warn(`AI quiz review failed on ${modelName}: ${message}`);
+        const detail = finishReason ? `${message} (finishReason=${finishReason})` : message;
+        failures.push(`${modelName}: ${detail}`);
+        this.logger.warn(`AI quiz review failed on ${modelName}: ${detail}`);
       }
     }
 
