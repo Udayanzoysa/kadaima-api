@@ -18,8 +18,9 @@ import { ContentLanguage, QuizStatus } from '@prisma/client';
 import { LocalizedTextDto } from './localized-text.dto';
 import { CreateQuestionDto } from './create-question.dto';
 import { QuizSectionInputDto } from './quiz-section.dto';
+import { SeoFieldsDto } from '../../common/dto/seo-fields.dto';
 
-export class CreateQuizDto {
+export class CreateQuizDto extends SeoFieldsDto {
   @ApiProperty()
   @IsUUID()
   courseId: string;

@@ -9,7 +9,12 @@ import {
   CreateBankQuestionDto,
   UpdateBankQuestionDto,
 } from './dto/bank-question.dto';
-import { Prisma, QuestionStatus, QuestionType } from '@prisma/client';
+import {
+  ContentLanguage,
+  Prisma,
+  QuestionStatus,
+  QuestionType,
+} from '@prisma/client';
 import {
   parseQuestionConfig,
   typeRequiresChoices,
@@ -46,54 +51,131 @@ function toJson(value: { en: string; si: string; ta: string }): Prisma.InputJson
   return value as Prisma.InputJsonValue;
 }
 
+export type QuestionListFilters = {
+  status?: QuestionStatus;
+  tag?: string;
+  quizId?: string;
+  search?: string;
+  /** Only questions not linked to any quiz. Takes precedence over quizId. */
+  unassigned?: boolean;
+  /**
+   * Detected from the script actually used in the text, not from which JSON slot
+   * it sits in — authors frequently type Sinhala/Tamil into the `en` slot.
+   */
+  language?: ContentLanguage;
+};
+
+/** Unicode blocks used to detect the script a question is written in. */
+const SINHALA_CHARS = '[\u0D80-\u0DFF]';
+const TAMIL_CHARS = '[\u0B80-\u0BFF]';
+const LATIN_LETTERS = '[A-Za-z]';
+
+const LIST_INCLUDE = {
+  choices: true,
+  createdBy: { select: { id: true, email: true, name: true } },
+  _count: { select: { quizLinks: true, responses: true } },
+  quizLinks: {
+    include: {
+      quiz: { select: { id: true, title: true, status: true } },
+    },
+  },
+} satisfies Prisma.QuestionInclude;
+
 @Injectable()
 export class QuestionService {
   constructor(private prisma: PrismaService) {}
 
-  async list(status?: QuestionStatus, filters?: { tag?: string; quizId?: string }) {
-    const where: Prisma.QuestionWhereInput = {};
-    if (status) where.status = status;
-    if (filters?.tag) {
-      where.tags = { has: filters.tag };
+  /**
+   * Text and language filters both have to reach into the localized `questionText`
+   * JSON, which Prisma cannot do case-insensitively (JsonFilterBase has no `mode`).
+   * Resolve them with one raw id query and feed the result into the normal Prisma
+   * query, so no denormalized column has to be kept in sync across write paths.
+   *
+   * Returns null when neither filter is active.
+   */
+  private async findTextMatchIds(
+    filters: Pick<QuestionListFilters, 'search' | 'language'>,
+  ): Promise<string[] | null> {
+    const conditions: Prisma.Sql[] = [];
+
+    const term = filters.search?.trim();
+    if (term) {
+      // Escape LIKE wildcards so a literal % or _ is not treated as a pattern.
+      const like = `%${term.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
+      conditions.push(Prisma.sql`(
+        question_text->>'en' ILIKE ${like}
+        OR question_text->>'si' ILIKE ${like}
+        OR question_text->>'ta' ILIKE ${like}
+        OR EXISTS (SELECT 1 FROM unnest(tags) AS t WHERE t ILIKE ${like})
+      )`);
     }
-    if (filters?.quizId) {
+
+    if (filters.language) {
+      // All slots concatenated, since the text may not live in its matching slot.
+      const blob = Prisma.sql`(
+        COALESCE(question_text->>'en', '') || ' ' ||
+        COALESCE(question_text->>'si', '') || ' ' ||
+        COALESCE(question_text->>'ta', '')
+      )`;
+      if (filters.language === 'si') {
+        conditions.push(Prisma.sql`${blob} ~ ${SINHALA_CHARS}`);
+      } else if (filters.language === 'ta') {
+        conditions.push(Prisma.sql`${blob} ~ ${TAMIL_CHARS}`);
+      } else {
+        // English means Latin script with no Sinhala/Tamil mixed in.
+        conditions.push(Prisma.sql`(
+          ${blob} ~ ${LATIN_LETTERS}
+          AND ${blob} !~ ${SINHALA_CHARS}
+          AND ${blob} !~ ${TAMIL_CHARS}
+        )`);
+      }
+    }
+
+    if (!conditions.length) return null;
+
+    const rows = await this.prisma.$queryRaw<Array<{ id: string }>>`
+      SELECT id::text AS id FROM questions
+      WHERE ${Prisma.join(conditions, ' AND ')}
+    `;
+    return rows.map((r) => r.id);
+  }
+
+  private async buildListWhere(
+    filters: QuestionListFilters,
+  ): Promise<Prisma.QuestionWhereInput> {
+    const where: Prisma.QuestionWhereInput = {};
+    if (filters.status) where.status = filters.status;
+    if (filters.tag) where.tags = { has: filters.tag };
+
+    if (filters.unassigned) {
+      where.quizLinks = { none: {} };
+    } else if (filters.quizId) {
       where.quizLinks = { some: { quizId: filters.quizId } };
     }
+
+    const matchIds = await this.findTextMatchIds(filters);
+    if (matchIds !== null) where.id = { in: matchIds };
+
+    return where;
+  }
+
+  async list(status?: QuestionStatus, filters?: Omit<QuestionListFilters, 'status'>) {
+    const where = await this.buildListWhere({ ...filters, status });
 
     return this.prisma.question.findMany({
       where,
       orderBy: { createdAt: 'desc' },
-      include: {
-        choices: true,
-        createdBy: { select: { id: true, email: true, name: true } },
-        _count: { select: { quizLinks: true, responses: true } },
-        quizLinks: {
-          include: {
-            quiz: { select: { id: true, title: true, status: true } },
-          },
-        },
-      },
+      include: LIST_INCLUDE,
     });
   }
 
-  async listPaginated(opts: {
-    status?: QuestionStatus;
-    page?: number;
-    pageSize?: number;
-    tag?: string;
-    quizId?: string;
-  }) {
+  async listPaginated(
+    opts: QuestionListFilters & { page?: number; pageSize?: number },
+  ) {
     const page = Math.max(1, opts.page ?? 1);
     const pageSize = Math.min(100, Math.max(1, opts.pageSize ?? 10));
 
-    const where: Prisma.QuestionWhereInput = {};
-    if (opts.status) where.status = opts.status;
-    if (opts.tag) {
-      where.tags = { has: opts.tag };
-    }
-    if (opts.quizId) {
-      where.quizLinks = { some: { quizId: opts.quizId } };
-    }
+    const where = await this.buildListWhere(opts);
 
     const [total, items] = await Promise.all([
       this.prisma.question.count({ where }),
@@ -102,16 +184,7 @@ export class QuestionService {
         orderBy: { createdAt: 'desc' },
         skip: (page - 1) * pageSize,
         take: pageSize,
-        include: {
-          choices: true,
-          createdBy: { select: { id: true, email: true, name: true } },
-          _count: { select: { quizLinks: true, responses: true } },
-          quizLinks: {
-            include: {
-              quiz: { select: { id: true, title: true, status: true } },
-            },
-          },
-        },
+        include: LIST_INCLUDE,
       }),
     ]);
 
@@ -124,19 +197,92 @@ export class QuestionService {
     };
   }
 
-  async getUniqueTags(): Promise<string[]> {
-    const questions = await this.prisma.question.findMany({
-      select: { tags: true },
-    });
-    const tagsSet = new Set<string>();
-    for (const q of questions) {
-      if (q.tags) {
-        for (const t of q.tags) {
-          tagsSet.add(t);
-        }
-      }
+  /**
+   * Distinct tags across the bank with usage counts.
+   * Tags only exist as values inside `questions.tags` arrays — there is no catalog table.
+   */
+  async getUniqueTags(): Promise<Array<{ tag: string; count: number }>> {
+    const rows = await this.prisma.$queryRaw<
+      Array<{ tag: string; count: bigint | number }>
+    >(Prisma.sql`
+      SELECT t AS tag, COUNT(*)::int AS count
+      FROM questions, unnest(tags) AS t
+      WHERE COALESCE(btrim(t), '') <> ''
+      GROUP BY t
+      ORDER BY t ASC
+    `);
+    return rows.map((r) => ({
+      tag: r.tag,
+      count: typeof r.count === 'bigint' ? Number(r.count) : Number(r.count),
+    }));
+  }
+
+  private normalizeTagName(raw: string): string {
+    const tag = raw?.trim() ?? '';
+    if (!tag) throw new BadRequestException('Tag name is required');
+    if (tag.length > 100) {
+      throw new BadRequestException('Tag name must be 100 characters or fewer');
     }
-    return Array.from(tagsSet).sort();
+    return tag;
+  }
+
+  /**
+   * Rename a tag on every question that has it. If `to` already exists on a row,
+   * the old name is removed and duplicates are collapsed.
+   */
+  async renameTag(fromRaw: string, toRaw: string) {
+    const from = this.normalizeTagName(fromRaw);
+    const to = this.normalizeTagName(toRaw);
+    if (from === to) {
+      return { updated: 0, from, to };
+    }
+
+    // Single round-trip: map `from` → `to`, then collapse duplicates.
+    const result = await this.prisma.$executeRaw(Prisma.sql`
+      UPDATE questions
+      SET tags = (
+        SELECT COALESCE(
+          array_agg(DISTINCT CASE WHEN t = ${from} THEN ${to} ELSE t END),
+          ARRAY[]::text[]
+        )
+        FROM unnest(tags) AS t
+      )
+      WHERE ${from} = ANY(tags)
+    `);
+
+    return { updated: result, from, to };
+  }
+
+  /** Strip a tag from every question that carries it. */
+  async deleteTag(tagRaw: string) {
+    const tag = this.normalizeTagName(tagRaw);
+    const result = await this.prisma.$executeRaw(Prisma.sql`
+      UPDATE questions
+      SET tags = array_remove(tags, ${tag})
+      WHERE ${tag} = ANY(tags)
+    `);
+    return { removed: result, tag };
+  }
+
+  /**
+   * Attach a tag to the given questions (creates the tag on first use).
+   * Idempotent per question — already-tagged rows are left unchanged.
+   */
+  async applyTag(tagRaw: string, questionIds: string[]) {
+    const tag = this.normalizeTagName(tagRaw);
+    const ids = [...new Set(questionIds.filter(Boolean))];
+    if (!ids.length) {
+      throw new BadRequestException('Select at least one question');
+    }
+
+    const result = await this.prisma.$executeRaw(Prisma.sql`
+      UPDATE questions
+      SET tags = array_append(tags, ${tag})
+      WHERE id IN (${Prisma.join(ids.map((id) => Prisma.sql`${id}::uuid`))})
+        AND NOT (${tag} = ANY(tags))
+    `);
+
+    return { updated: result, tag, requested: ids.length };
   }
 
   async bulkUpdateStatus(ids: string[], status: QuestionStatus) {

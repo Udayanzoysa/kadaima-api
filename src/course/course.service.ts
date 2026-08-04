@@ -21,6 +21,8 @@ import {
   xlsxDownload,
   type Localized,
 } from '../common/backup/backup.util';
+import { normalizeSeoField } from '../common/dto/seo-fields.dto';
+import { findIdsByLocalizedTitle } from '../common/localized-json-search';
 
 type ExportModule = {
   title: Localized;
@@ -32,6 +34,8 @@ type ExportModule = {
 type ExportCourse = {
   title: Localized;
   description?: Localized | null;
+  seoTitle?: string | null;
+  seoDescription?: string | null;
   status: CourseStatus;
   modules: ExportModule[];
 };
@@ -44,9 +48,13 @@ function toJson(value: { en: string; si: string; ta: string }): Prisma.InputJson
 export class CourseService {
   constructor(private prisma: PrismaService) {}
 
-  async listCourses(status?: CourseStatus) {
+  async listCourses(
+    status?: CourseStatus,
+    filters?: { search?: string },
+  ) {
+    const where = await this.buildCourseWhere({ status, search: filters?.search });
     return this.prisma.course.findMany({
-      where: status ? { status } : undefined,
+      where,
       orderBy: { createdAt: 'desc' },
       include: {
         _count: { select: { quizzes: true, modules: true } },
@@ -56,12 +64,16 @@ export class CourseService {
 
   async listCoursesPaginated(opts: {
     status?: CourseStatus;
+    search?: string;
     page?: number;
     pageSize?: number;
   }) {
     const page = Math.max(1, opts.page ?? 1);
     const pageSize = Math.min(100, Math.max(1, opts.pageSize ?? 10));
-    const where = opts.status ? { status: opts.status } : undefined;
+    const where = await this.buildCourseWhere({
+      status: opts.status,
+      search: opts.search,
+    });
 
     const [total, items] = await Promise.all([
       this.prisma.course.count({ where }),
@@ -83,6 +95,23 @@ export class CourseService {
       pageSize,
       totalPages: Math.max(1, Math.ceil(total / pageSize)),
     };
+  }
+
+  private async buildCourseWhere(filters: {
+    status?: CourseStatus;
+    search?: string;
+  }): Promise<Prisma.CourseWhereInput> {
+    const where: Prisma.CourseWhereInput = {};
+    if (filters.status) where.status = filters.status;
+
+    const matchIds = await findIdsByLocalizedTitle(
+      this.prisma,
+      'courses',
+      filters.search,
+    );
+    if (matchIds !== null) where.id = { in: matchIds };
+
+    return where;
   }
 
   async bulkUpdateCourseStatus(ids: string[], status: CourseStatus) {
@@ -128,6 +157,8 @@ export class CourseService {
       data: {
         title: toJson(dto.title),
         description: dto.description ? toJson(dto.description) : undefined,
+        seoTitle: normalizeSeoField(dto.seoTitle),
+        seoDescription: normalizeSeoField(dto.seoDescription),
         status: dto.status ?? CourseStatus.Draft,
       },
       include: {
@@ -149,6 +180,8 @@ export class CourseService {
                 : Prisma.DbNull,
             }
           : {}),
+        seoTitle: normalizeSeoField(dto.seoTitle),
+        seoDescription: normalizeSeoField(dto.seoDescription),
         ...(dto.status ? { status: dto.status } : {}),
       },
       include: {
@@ -177,28 +210,38 @@ export class CourseService {
     return { deleted: true, id };
   }
 
-  async listModules(courseId: string, status?: CourseStatus) {
+  async listModules(
+    courseId: string,
+    status?: CourseStatus,
+    filters?: { search?: string },
+  ) {
     await this.ensureCourse(courseId);
+    const where = await this.buildModuleWhere(courseId, {
+      status,
+      search: filters?.search,
+    });
     return this.prisma.module.findMany({
-      where: {
-        courseId,
-        ...(status ? { status } : {}),
-      },
+      where,
       orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
     });
   }
 
   async listModulesPaginated(
     courseId: string,
-    opts: { status?: CourseStatus; page?: number; pageSize?: number },
+    opts: {
+      status?: CourseStatus;
+      search?: string;
+      page?: number;
+      pageSize?: number;
+    },
   ) {
     await this.ensureCourse(courseId);
     const page = Math.max(1, opts.page ?? 1);
     const pageSize = Math.min(100, Math.max(1, opts.pageSize ?? 10));
-    const where = {
-      courseId,
-      ...(opts.status ? { status: opts.status } : {}),
-    };
+    const where = await this.buildModuleWhere(courseId, {
+      status: opts.status,
+      search: opts.search,
+    });
 
     const [total, items] = await Promise.all([
       this.prisma.module.count({ where }),
@@ -217,6 +260,23 @@ export class CourseService {
       pageSize,
       totalPages: Math.max(1, Math.ceil(total / pageSize)),
     };
+  }
+
+  private async buildModuleWhere(
+    courseId: string,
+    filters: { status?: CourseStatus; search?: string },
+  ): Promise<Prisma.ModuleWhereInput> {
+    const where: Prisma.ModuleWhereInput = { courseId };
+    if (filters.status) where.status = filters.status;
+
+    const matchIds = await findIdsByLocalizedTitle(
+      this.prisma,
+      'modules',
+      filters.search,
+    );
+    if (matchIds !== null) where.id = { in: matchIds };
+
+    return where;
   }
 
   async bulkUpdateModuleStatus(
@@ -315,6 +375,8 @@ export class CourseService {
       description: course.description
         ? asLocalized(course.description)
         : null,
+      seoTitle: course.seoTitle,
+      seoDescription: course.seoDescription,
       status: course.status,
       modules: course.modules.map((mod) => ({
         title: asLocalized(mod.title),
@@ -335,6 +397,8 @@ export class CourseService {
         description_en: c.description?.en ?? '',
         description_si: c.description?.si ?? '',
         description_ta: c.description?.ta ?? '',
+        seo_title: c.seoTitle ?? '',
+        seo_description: c.seoDescription ?? '',
         status: c.status,
       }));
       const moduleRows = payload.flatMap((c, index) =>
@@ -451,6 +515,8 @@ export class CourseService {
           si: row.description_si || '',
           ta: row.description_ta || '',
         }),
+        seoTitle: row.seo_title || null,
+        seoDescription: row.seo_description || null,
         status: statusRaw as CourseStatus,
         modules,
       };
@@ -489,6 +555,8 @@ export class CourseService {
           description: item.description
             ? asLocalized(item.description)
             : undefined,
+          seoTitle: item.seoTitle ?? null,
+          seoDescription: item.seoDescription ?? null,
           status: item.status ?? CourseStatus.Draft,
         };
         const course = await this.createCourse(courseDto);

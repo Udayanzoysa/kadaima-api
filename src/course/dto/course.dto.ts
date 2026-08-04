@@ -11,8 +11,9 @@ import { Type } from 'class-transformer';
 import { ApiProperty } from '@nestjs/swagger';
 import { CourseStatus } from '@prisma/client';
 import { LocalizedTextDto } from '../../quiz/dto/localized-text.dto';
+import { SeoFieldsDto } from '../../common/dto/seo-fields.dto';
 
-export class CreateCourseDto {
+export class CreateCourseDto extends SeoFieldsDto {
   @ApiProperty({ type: LocalizedTextDto })
   @ValidateNested()
   @Type(() => LocalizedTextDto)
@@ -30,7 +31,7 @@ export class CreateCourseDto {
   status?: CourseStatus;
 }
 
-export class UpdateCourseDto {
+export class UpdateCourseDto extends SeoFieldsDto {
   @ApiProperty({ type: LocalizedTextDto, required: false })
   @ValidateNested()
   @Type(() => LocalizedTextDto)

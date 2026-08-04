@@ -143,18 +143,35 @@ export class QuizController {
   @Get()
   @ApiOperation({ summary: 'List quizzes (paginated when page/pageSize provided)' })
   @ApiQuery({ name: 'status', required: false, enum: QuizStatus })
+  @ApiQuery({ name: 'courseId', required: false, type: String })
+  @ApiQuery({ name: 'moduleId', required: false, type: String })
+  @ApiQuery({
+    name: 'search',
+    required: false,
+    type: String,
+    description: 'Case-insensitive match against localized quiz title',
+  })
   @ApiQuery({ name: 'page', required: false, type: Number })
   @ApiQuery({ name: 'pageSize', required: false, type: Number })
   listQuizzes(
     @Query('status') status?: QuizStatus,
+    @Query('courseId') courseId?: string,
+    @Query('moduleId') moduleId?: string,
+    @Query('search') search?: string,
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
   ) {
+    const filters = {
+      courseId: courseId?.trim() || undefined,
+      moduleId: moduleId?.trim() || undefined,
+      search: search?.trim() || undefined,
+    };
     if (page === undefined && pageSize === undefined) {
-      return this.quizService.listQuizzes(status);
+      return this.quizService.listQuizzes(status, filters);
     }
     return this.quizService.listQuizzesPaginated({
       status,
+      ...filters,
       page: page ? Number(page) : 1,
       pageSize: pageSize ? Number(pageSize) : 10,
     });

@@ -33,6 +33,8 @@ import {
   xlsxDownload,
   type Localized as BackupLocalized,
 } from '../common/backup/backup.util';
+import { normalizeSeoField } from '../common/dto/seo-fields.dto';
+import { findIdsByLocalizedTitle } from '../common/localized-json-search';
 
 type Localized = { en: string; si: string; ta: string };
 
@@ -56,6 +58,8 @@ type ExportQuiz = {
   languages: ContentLanguage[];
   title: BackupLocalized;
   description?: BackupLocalized | null;
+  seoTitle?: string | null;
+  seoDescription?: string | null;
   coverImageUrl?: string | null;
   durationMinutes: number;
   passingScorePercentage: number;
@@ -244,9 +248,18 @@ export class QuizService {
     };
   }
 
-  async listQuizzes(status?: QuizStatus) {
+  async listQuizzes(
+    status?: QuizStatus,
+    filters?: { courseId?: string; moduleId?: string; search?: string },
+  ) {
+    const where = await this.buildQuizListWhere({
+      status,
+      courseId: filters?.courseId,
+      moduleId: filters?.moduleId,
+      search: filters?.search,
+    });
     const quizzes = await this.prisma.quiz.findMany({
-      where: status ? { status } : undefined,
+      where,
       orderBy: { createdAt: 'desc' },
       include: {
         course: true,
@@ -260,12 +273,20 @@ export class QuizService {
 
   async listQuizzesPaginated(opts: {
     status?: QuizStatus;
+    courseId?: string;
+    moduleId?: string;
+    search?: string;
     page?: number;
     pageSize?: number;
   }) {
     const page = Math.max(1, opts.page ?? 1);
     const pageSize = Math.min(100, Math.max(1, opts.pageSize ?? 10));
-    const where = opts.status ? { status: opts.status } : undefined;
+    const where = await this.buildQuizListWhere({
+      status: opts.status,
+      courseId: opts.courseId,
+      moduleId: opts.moduleId,
+      search: opts.search,
+    });
 
     const [total, quizzes] = await Promise.all([
       this.prisma.quiz.count({ where }),
@@ -290,6 +311,27 @@ export class QuizService {
       pageSize,
       totalPages: Math.max(1, Math.ceil(total / pageSize)),
     };
+  }
+
+  private async buildQuizListWhere(filters: {
+    status?: QuizStatus;
+    courseId?: string;
+    moduleId?: string;
+    search?: string;
+  }): Promise<Prisma.QuizWhereInput> {
+    const where: Prisma.QuizWhereInput = {};
+    if (filters.status) where.status = filters.status;
+    if (filters.courseId) where.courseId = filters.courseId;
+    if (filters.moduleId) where.moduleId = filters.moduleId;
+
+    const matchIds = await findIdsByLocalizedTitle(
+      this.prisma,
+      'quizzes',
+      filters.search,
+    );
+    if (matchIds !== null) where.id = { in: matchIds };
+
+    return where;
   }
 
   async bulkUpdateStatus(ids: string[], status: QuizStatus) {
@@ -576,6 +618,8 @@ export class QuizService {
         languages: true,
         title: true,
         description: true,
+        seoTitle: true,
+        seoDescription: true,
         coverImageUrl: true,
         durationMinutes: true,
         passingScorePercentage: true,
@@ -583,7 +627,14 @@ export class QuizService {
         shuffleQuestions: true,
         requiresUnlock: true,
         priceLkr: true,
-        course: { select: { id: true, title: true } },
+        course: {
+          select: {
+            id: true,
+            title: true,
+            seoTitle: true,
+            seoDescription: true,
+          },
+        },
         module: { select: { id: true, title: true } },
         createdBy: {
           select: {
@@ -1369,6 +1420,8 @@ export class QuizService {
           description: dto.description
             ? toJson(toLanguagesLocalized(dto.description, languages))
             : undefined,
+          seoTitle: normalizeSeoField(dto.seoTitle),
+          seoDescription: normalizeSeoField(dto.seoDescription),
           coverImageUrl: dto.coverImageUrl ?? undefined,
           durationMinutes: dto.durationMinutes,
           passingScorePercentage: dto.passingScorePercentage,
@@ -1546,6 +1599,8 @@ export class QuizService {
           title: nextTitle ? toJson(nextTitle) : undefined,
           description:
             nextDescription !== undefined ? toJson(nextDescription) : undefined,
+          seoTitle: normalizeSeoField(dto.seoTitle),
+          seoDescription: normalizeSeoField(dto.seoDescription),
           coverImageUrl:
             dto.coverImageUrl === undefined ? undefined : dto.coverImageUrl,
           durationMinutes: dto.durationMinutes,
@@ -1990,6 +2045,8 @@ export class QuizService {
           : [quiz.language]) as ContentLanguage[],
         title: asLocalized(quiz.title),
         description: quiz.description ? asLocalized(quiz.description) : null,
+        seoTitle: quiz.seoTitle,
+        seoDescription: quiz.seoDescription,
         coverImageUrl: quiz.coverImageUrl,
         durationMinutes: quiz.durationMinutes,
         passingScorePercentage: quiz.passingScorePercentage,
@@ -2020,6 +2077,8 @@ export class QuizService {
         description_en: q.description?.en ?? '',
         description_si: q.description?.si ?? '',
         description_ta: q.description?.ta ?? '',
+        seo_title: q.seoTitle ?? '',
+        seo_description: q.seoDescription ?? '',
         languages: q.languages.join(','),
         duration_minutes: q.durationMinutes,
         passing_score: q.passingScorePercentage,
@@ -2200,6 +2259,8 @@ export class QuizService {
           si: row.description_si || '',
           ta: row.description_ta || '',
         }),
+        seoTitle: row.seo_title || null,
+        seoDescription: row.seo_description || null,
         coverImageUrl: row.cover_image_url || null,
         durationMinutes: Math.max(5, Number(row.duration_minutes) || 30),
         passingScorePercentage: Math.min(
@@ -2303,6 +2364,8 @@ export class QuizService {
             description: item.description
               ? asLocalized(item.description)
               : undefined,
+            seoTitle: item.seoTitle ?? null,
+            seoDescription: item.seoDescription ?? null,
             coverImageUrl: item.coverImageUrl ?? null,
             durationMinutes: item.durationMinutes ?? 30,
             passingScorePercentage: item.passingScorePercentage ?? 70,
@@ -2328,6 +2391,8 @@ export class QuizService {
             description: item.description
               ? asLocalized(item.description)
               : undefined,
+            seoTitle: item.seoTitle ?? null,
+            seoDescription: item.seoDescription ?? null,
             coverImageUrl: item.coverImageUrl ?? null,
             durationMinutes: item.durationMinutes ?? 30,
             passingScorePercentage: item.passingScorePercentage ?? 70,

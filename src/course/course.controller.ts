@@ -54,18 +54,27 @@ export class CourseController {
   @Get()
   @ApiOperation({ summary: 'List courses (paginated when page/pageSize provided)' })
   @ApiQuery({ name: 'status', required: false, enum: CourseStatus })
+  @ApiQuery({
+    name: 'search',
+    required: false,
+    type: String,
+    description: 'Case-insensitive match against localized course title',
+  })
   @ApiQuery({ name: 'page', required: false, type: Number })
   @ApiQuery({ name: 'pageSize', required: false, type: Number })
   listCourses(
     @Query('status') status?: CourseStatus,
+    @Query('search') search?: string,
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
   ) {
+    const searchTerm = search?.trim() || undefined;
     if (page === undefined && pageSize === undefined) {
-      return this.courseService.listCourses(status);
+      return this.courseService.listCourses(status, { search: searchTerm });
     }
     return this.courseService.listCoursesPaginated({
       status,
+      search: searchTerm,
       page: page ? Number(page) : 1,
       pageSize: pageSize ? Number(pageSize) : 10,
     });
@@ -165,19 +174,30 @@ export class CourseController {
   @Get(':courseId/modules')
   @ApiOperation({ summary: 'List modules for a course (paginated when page/pageSize provided)' })
   @ApiQuery({ name: 'status', required: false, enum: CourseStatus })
+  @ApiQuery({
+    name: 'search',
+    required: false,
+    type: String,
+    description: 'Case-insensitive match against localized module title',
+  })
   @ApiQuery({ name: 'page', required: false, type: Number })
   @ApiQuery({ name: 'pageSize', required: false, type: Number })
   listModules(
     @Param('courseId') courseId: string,
     @Query('status') status?: CourseStatus,
+    @Query('search') search?: string,
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
   ) {
+    const searchTerm = search?.trim() || undefined;
     if (page === undefined && pageSize === undefined) {
-      return this.courseService.listModules(courseId, status);
+      return this.courseService.listModules(courseId, status, {
+        search: searchTerm,
+      });
     }
     return this.courseService.listModulesPaginated(courseId, {
       status,
+      search: searchTerm,
       page: page ? Number(page) : 1,
       pageSize: pageSize ? Number(pageSize) : 10,
     });

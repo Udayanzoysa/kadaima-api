@@ -128,3 +128,30 @@ export class BulkUpdateQuestionStatusDto extends BulkQuestionIdsDto {
   @IsEnum(QuestionStatus)
   status: QuestionStatus;
 }
+
+export class RenameTagDto {
+  @ApiProperty({ description: 'Existing tag to rename (exact match)' })
+  @IsString()
+  from: string;
+
+  @ApiProperty({ description: 'New tag name' })
+  @IsString()
+  to: string;
+}
+
+export class DeleteTagDto {
+  @ApiProperty({ description: 'Tag to remove from every question' })
+  @IsString()
+  tag: string;
+}
+
+export class ApplyTagDto {
+  @ApiProperty({ description: 'Tag to add (created on first use)' })
+  @IsString()
+  tag: string;
+
+  @ApiProperty({ type: [String], description: 'Question IDs to attach the tag to' })
+  @IsArray()
+  @IsUUID('4', { each: true })
+  questionIds: string[];
+}

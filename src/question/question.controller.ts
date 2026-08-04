@@ -29,7 +29,13 @@ import { diskStorage, memoryStorage } from 'multer';
 import { extname, join } from 'path';
 import { existsSync, mkdirSync } from 'fs';
 import type { Response } from 'express';
-import { AuditAction, QuestionStatus, Action, Subject } from '@prisma/client';
+import {
+  AuditAction,
+  ContentLanguage,
+  QuestionStatus,
+  Action,
+  Subject,
+} from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PoliciesGuard } from '../auth/guards/policies.guard';
 import { CheckPolicies } from '../auth/decorators/policies.decorator';
@@ -42,6 +48,9 @@ import {
   UpdateQuestionStatusDto,
   BulkQuestionIdsDto,
   BulkUpdateQuestionStatusDto,
+  RenameTagDto,
+  DeleteTagDto,
+  ApplyTagDto,
 } from './dto/bank-question.dto';
 
 const uploadDir = join(process.cwd(), 'uploads', 'questions');
@@ -66,22 +75,49 @@ export class QuestionController {
   @ApiQuery({ name: 'pageSize', required: false, type: Number })
   @ApiQuery({ name: 'tag', required: false, type: String })
   @ApiQuery({ name: 'quizId', required: false, type: String })
+  @ApiQuery({
+    name: 'search',
+    required: false,
+    type: String,
+    description: 'Case-insensitive match on question text (any language) and tags',
+  })
+  @ApiQuery({
+    name: 'unassigned',
+    required: false,
+    type: Boolean,
+    description: 'Only questions not attached to any quiz. Overrides quizId.',
+  })
+  @ApiQuery({
+    name: 'language',
+    required: false,
+    enum: ContentLanguage,
+    description: 'Detected from the script used in the text, not the JSON slot it sits in',
+  })
   list(
     @Query('status') status?: QuestionStatus,
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
     @Query('tag') tag?: string,
     @Query('quizId') quizId?: string,
+    @Query('search') search?: string,
+    @Query('unassigned') unassigned?: string,
+    @Query('language') language?: ContentLanguage,
   ) {
+    const filters = {
+      tag,
+      quizId,
+      search,
+      language,
+      unassigned: unassigned === 'true' || unassigned === '1',
+    };
     if (page === undefined && pageSize === undefined) {
-      return this.questionService.list(status, { tag, quizId });
+      return this.questionService.list(status, filters);
     }
     return this.questionService.listPaginated({
+      ...filters,
       status,
       page: page ? Number(page) : 1,
       pageSize: pageSize ? Number(pageSize) : 10,
-      tag,
-      quizId,
     });
   }
 
@@ -214,9 +250,34 @@ export class QuestionController {
   }
 
   @Get('tags')
-  @ApiOperation({ summary: 'Get all unique tags in the question bank' })
+  @ApiOperation({
+    summary: 'List all unique tags in the question bank with usage counts',
+  })
   getUniqueTags() {
     return this.questionService.getUniqueTags();
+  }
+
+  @Post('tags/apply')
+  @Audit('QUESTIONS', AuditAction.UPDATE)
+  @ApiOperation({
+    summary: 'Add a tag to selected questions (creates the tag on first use)',
+  })
+  applyTag(@Body() dto: ApplyTagDto) {
+    return this.questionService.applyTag(dto.tag, dto.questionIds);
+  }
+
+  @Patch('tags/rename')
+  @Audit('QUESTIONS', AuditAction.UPDATE)
+  @ApiOperation({ summary: 'Rename a tag across every question that uses it' })
+  renameTag(@Body() dto: RenameTagDto) {
+    return this.questionService.renameTag(dto.from, dto.to);
+  }
+
+  @Post('tags/delete')
+  @Audit('QUESTIONS', AuditAction.DELETE)
+  @ApiOperation({ summary: 'Remove a tag from every question that uses it' })
+  deleteTag(@Body() dto: DeleteTagDto) {
+    return this.questionService.deleteTag(dto.tag);
   }
 
   @Get(':id')

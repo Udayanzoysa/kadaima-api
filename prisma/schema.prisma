@@ -556,6 +556,10 @@ model Course {
   id          String       @id @default(uuid()) @db.Uuid
   title       Json
   description Json?
+  /// Admin-authored SERP title. Falls back to `title` when blank.
+  seoTitle       String?   @map("seo_title") @db.VarChar(255)
+  /// Admin-authored meta description. Falls back to a derived summary when blank.
+  seoDescription String?   @map("seo_description") @db.Text
   status      CourseStatus @default(Draft)
   createdAt   DateTime     @default(now()) @map("created_at")
   updatedAt   DateTime     @updatedAt @map("updated_at")
@@ -593,6 +597,10 @@ model Quiz {
   languages              ContentLanguage[] @default([en])
   title                  Json
   description            Json?
+  /// Admin-authored SERP title. Falls back to `title` when blank.
+  seoTitle               String?         @map("seo_title") @db.VarChar(255)
+  /// Admin-authored meta description. Falls back to `description` when blank.
+  seoDescription         String?         @map("seo_description") @db.Text
   coverImageUrl          String?         @map("cover_image_url")
   durationMinutes        Int             @map("duration_minutes")
   passingScorePercentage Int             @default(70) @map("passing_score_percentage")
