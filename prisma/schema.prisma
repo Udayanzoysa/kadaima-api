@@ -621,6 +621,7 @@ model Quiz {
   unlockVouchers         UnlockVoucher[]
   slipSubmissions        PaymentSlipSubmission[]
   teacherPageSelections  TeacherProfileQuiz[]
+  chatLeads              ChatLead[]
 
   @@index([courseId])
   @@index([moduleId])
@@ -939,7 +940,13 @@ model ChatLead {
   age          Int?
   school       String?
   tag          String   @default("Chatbot")
+  /// Set when tag is "Quiz Attempt" — the quiz the guest started.
+  quizId       String?  @map("quiz_id") @db.Uuid
+  quiz         Quiz?    @relation(fields: [quizId], references: [id], onDelete: SetNull)
+  /// Denormalized display title (usually English) for the leads table.
+  quizTitle    String?  @map("quiz_title") @db.VarChar(500)
   createdAt    DateTime @default(now()) @map("created_at")
 
+  @@index([quizId])
   @@map("chat_leads")
 }

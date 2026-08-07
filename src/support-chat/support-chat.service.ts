@@ -57,13 +57,58 @@ export class SupportChatService {
       this.prisma.chatLead.count(),
     ]);
 
+    // Backfill quiz titles for older Quiz Attempt leads that predate quizTitle.
+    const needsTitle = items.filter(
+      (i) => i.tag === 'Quiz Attempt' && !i.quizTitle,
+    );
+    const titleByMobile = new Map<string, string>();
+    if (needsTitle.length > 0) {
+      const mobiles = [...new Set(needsTitle.map((i) => i.mobileNumber))];
+      const attempts = await this.prisma.quizAttempt.findMany({
+        where: {
+          guestLead: { mobileNumber: { in: mobiles } },
+        },
+        orderBy: { startedAt: 'desc' },
+        select: {
+          guestLead: { select: { mobileNumber: true } },
+          quiz: { select: { title: true } },
+        },
+      });
+      for (const attempt of attempts) {
+        const mobile = attempt.guestLead?.mobileNumber;
+        if (!mobile || titleByMobile.has(mobile)) continue;
+        const title = this.quizTitleText(attempt.quiz?.title);
+        if (title) titleByMobile.set(mobile, title);
+      }
+    }
+
+    const enriched = items.map((item) => ({
+      ...item,
+      quizTitle:
+        item.quizTitle ||
+        (item.tag === 'Quiz Attempt'
+          ? titleByMobile.get(item.mobileNumber) ?? null
+          : null),
+    }));
+
     return {
-      items,
+      items: enriched,
       total,
       page,
       pageSize,
       totalPages: Math.ceil(total / pageSize),
     };
+  }
+
+  private quizTitleText(title: unknown): string | null {
+    if (!title) return null;
+    if (typeof title === 'string') return title.trim() || null;
+    if (typeof title === 'object') {
+      const t = title as { en?: string; si?: string; ta?: string };
+      const value = t.en?.trim() || t.si?.trim() || t.ta?.trim();
+      return value || null;
+    }
+    return null;
   }
 
   async getReply(

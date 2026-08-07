@@ -1008,6 +1008,7 @@ export class QuizService {
     });
 
     try {
+      const quizTitle = this.quizTitleForLead(quiz.title);
       const existingLead = await this.prisma.chatLead.findFirst({
         where: {
           mobileNumber: lead.mobileNumber,
@@ -1021,6 +1022,8 @@ export class QuizService {
             name: lead.studentName,
             school: lead.school,
             email: lead.email || null,
+            quizId,
+            quizTitle,
           },
         });
       } else {
@@ -1031,6 +1034,8 @@ export class QuizService {
             mobileNumber: lead.mobileNumber,
             email: lead.email || null,
             tag: 'Quiz Attempt',
+            quizId,
+            quizTitle,
           },
         });
       }
@@ -1971,6 +1976,18 @@ export class QuizService {
 
   private titleKey(title: unknown): string {
     return asLocalized(title).en.trim().toLowerCase();
+  }
+
+  /** English (or first available) quiz title for ChatLead display. */
+  private quizTitleForLead(title: unknown): string | null {
+    if (!title) return null;
+    if (typeof title === 'string') return title.trim() || null;
+    if (typeof title === 'object') {
+      const t = title as { en?: string; si?: string; ta?: string };
+      const value = t.en?.trim() || t.si?.trim() || t.ta?.trim();
+      return value || null;
+    }
+    return null;
   }
 
   private async resolveCourseIdByTitle(title: BackupLocalized): Promise<string> {
