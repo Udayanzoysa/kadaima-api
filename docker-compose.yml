@@ -10,7 +10,8 @@ services:
       POSTGRES_PASSWORD: udaya96
       POSTGRES_DB: kadaimadb
     ports:
-      - "5432:5432"
+      # Host 5433 — VPS 84.247.138.71 already uses 5432 for other apps
+      - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
 
@@ -25,7 +26,7 @@ services:
       BACKUP_RETENTION_COUNT: "14"
       BACKUP_CRON_ENABLED: "false"
     ports:
-      - "4000:4000"
+      - "4001:4000"
     volumes:
       # Persist quiz/question image uploads across container restarts
       - uploads:/app/uploads
