@@ -1,6 +1,9 @@
 import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
 import { ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
-import { CreateTeacherInquiryDto } from './dto/teacher-inquiry.dto';
+import {
+  CreateTeacherEnrollmentRequestDto,
+  CreateTeacherInquiryDto,
+} from './dto/teacher-inquiry.dto';
 import { TeachersService } from './teachers.service';
 
 @ApiTags('Public Teacher Pages')
@@ -35,5 +38,16 @@ export class PublicTeachersController {
     @Body() dto: CreateTeacherInquiryDto,
   ) {
     return this.teachersService.createPublicInquiry(slug, dto);
+  }
+
+  @Post(':slug/enrollment-requests')
+  @ApiOperation({
+    summary: 'Submit a student enrollment request on a published teacher page',
+  })
+  createEnrollmentRequest(
+    @Param('slug') slug: string,
+    @Body() dto: CreateTeacherEnrollmentRequestDto,
+  ) {
+    return this.teachersService.createPublicEnrollmentRequest(slug, dto);
   }
 }

@@ -49,6 +49,52 @@ export class CreateTeacherInquiryDto {
   userId?: string;
 }
 
+export class CreateTeacherEnrollmentRequestDto {
+  @ApiProperty({ example: 'Saman Perera' })
+  @IsString()
+  @MinLength(2)
+  @MaxLength(255)
+  studentName: string;
+
+  @ApiProperty({ example: '0771234567', description: 'Sri Lankan mobile: 07XXXXXXXX' })
+  @IsString()
+  @Matches(/^07\d{8}$/, {
+    message: 'Mobile number must be a valid Sri Lankan number (07XXXXXXXX)',
+  })
+  mobileNumber: string;
+
+  @ApiPropertyOptional({ example: 'saman@example.com' })
+  @IsOptional()
+  @IsEmail()
+  @MaxLength(255)
+  email?: string;
+
+  @ApiProperty({ description: 'Class batch or teacher class identifier' })
+  @IsString()
+  classId: string;
+
+  @ApiPropertyOptional({ description: 'Human-readable class name' })
+  @IsOptional()
+  @IsString()
+  className?: string;
+
+  @ApiPropertyOptional({ example: 'Please enroll me in the weekend revision session.' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  note?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  guestSessionId?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  userId?: string;
+}
+
 export class UpdateTeacherInquiryDto {
   @ApiPropertyOptional({ enum: TeacherInquiryStatus })
   @IsOptional()

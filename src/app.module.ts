@@ -24,6 +24,8 @@ import { SupportChatModule } from './support-chat/support-chat.module';
 import { BackupModule } from './backup/backup.module';
 import { RevenueModule } from './revenue/revenue.module';
 import { envValidationSchema } from './config/env.validation';
+import { LeaderboardModule } from './leaderboard/leaderboard.module';
+import { ClassesModule } from './classes/classes.module';
 
 @Module({
   imports: [
@@ -48,6 +50,7 @@ import { envValidationSchema } from './config/env.validation';
     DashboardModule,
     QuizModule,
     CourseModule,
+    ClassesModule,
     TeachersModule,
     PaymentsModule,
     GradingModule,
@@ -57,6 +60,7 @@ import { envValidationSchema } from './config/env.validation';
     BackupModule,
     RevenueModule,
     ScheduleModule.forRoot(),
+    LeaderboardModule,
   ],
   controllers: [AppController],
   providers: [

@@ -14,6 +14,8 @@ const LOCALIZED_TITLE_TABLES = {
   quizzes: 'quizzes',
   courses: 'courses',
   modules: 'modules',
+  class_batches: 'class_batches',
+  lessons: 'lessons',
 } as const;
 
 export type LocalizedTitleTable = keyof typeof LOCALIZED_TITLE_TABLES;

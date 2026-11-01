@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Prisma } from '@prisma/client';
+import { Prisma, QuizStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   UpdateNotificationSettingsDto,
@@ -11,6 +11,7 @@ import { NotificationConfigService } from './notification-config.service';
 import { UpdateBillingSettingsDto } from './dto/billing-settings.dto';
 import { UpdateAiSettingsDto } from './dto/ai-settings.dto';
 import { UpdateSeoSettingsDto } from './dto/seo-settings.dto';
+import { UpdateHomepageSettingsDto } from './dto/homepage-settings.dto';
 import {
   DEFAULT_SMTP_CONFIG,
   mergeBilling,
@@ -18,6 +19,13 @@ import {
   SmtpConfig,
 } from './notification-config.types';
 import { mergeSeo } from './seo-config.types';
+import {
+  courseKindFromEnTitle,
+  HomepageCategoryConfig,
+  HomepageConfig,
+  mergeHomepage,
+  seedRankForKind,
+} from './homepage-config.types';
 
 const SETTINGS_ID = 'default';
 
@@ -212,6 +220,266 @@ export class SettingsService {
     });
 
     return this.getSeoSettings();
+  }
+
+  async getHomepageSettings() {
+    const row = await this.ensureRow();
+    let config = mergeHomepage(row.homepage);
+    if (!row.homepage) {
+      config = await this.buildSeededHomepageConfig(config);
+      await this.prisma.systemSetting.update({
+        where: { id: SETTINGS_ID },
+        data: { homepage: config as unknown as Prisma.InputJsonValue },
+      });
+    }
+    const availableCourses = await this.listCoursesWithPublishedQuizzes();
+    return {
+      ...config,
+      availableCourses,
+      updatedAt: row.updatedAt,
+    };
+  }
+
+  async updateHomepageSettings(dto: UpdateHomepageSettingsDto, updatedBy?: string) {
+    const current = mergeHomepage((await this.ensureRow()).homepage);
+    const next = mergeHomepage({
+      hero: dto.hero !== undefined ? { ...current.hero, ...dto.hero } : current.hero,
+      maxCategories:
+        dto.maxCategories !== undefined ? dto.maxCategories : current.maxCategories,
+      categories: dto.categories !== undefined ? dto.categories : current.categories,
+      promoSection:
+        dto.promoSection !== undefined
+          ? { ...current.promoSection, ...dto.promoSection }
+          : current.promoSection,
+    });
+
+    await this.prisma.systemSetting.update({
+      where: { id: SETTINGS_ID },
+      data: {
+        homepage: next as unknown as Prisma.InputJsonValue,
+        updatedBy: updatedBy ?? null,
+      },
+    });
+
+    return this.getHomepageSettings();
+  }
+
+  /**
+   * Resolved public home payload: hero + ordered sections with quizzes + promo.
+   * Empty category config falls back to all published courses (legacy keyword order).
+   */
+  async getPublicHomepage(guestSessionId?: string, userId?: string) {
+    const row = await this.ensureRow();
+    let config = mergeHomepage(row.homepage);
+    if (!row.homepage) {
+      config = await this.buildSeededHomepageConfig(config);
+      await this.prisma.systemSetting.update({
+        where: { id: SETTINGS_ID },
+        data: { homepage: config as unknown as Prisma.InputJsonValue },
+      });
+    }
+
+    const allQuizzes = await this.loadPublishedQuizCards(guestSessionId, userId);
+    const byCourse = new Map<string, typeof allQuizzes>();
+    for (const quiz of allQuizzes) {
+      const list = byCourse.get(quiz.course.id) ?? [];
+      list.push(quiz);
+      byCourse.set(quiz.course.id, list);
+    }
+
+    const configured = config.categories
+      .filter((c) => c.visible)
+      .sort((a, b) => a.sortOrder - b.sortOrder);
+
+    const useConfigured = configured.length > 0;
+    let sectionDefs: HomepageCategoryConfig[] = useConfigured
+      ? configured
+      : [...byCourse.keys()].map((courseId, i) => ({
+          courseId,
+          visible: true,
+          sortOrder: i,
+          maxQuizzes: 48,
+          quizIds: [],
+        }));
+
+    if (useConfigured) {
+      sectionDefs = sectionDefs.slice(0, config.maxCategories);
+    } else {
+      // Legacy empty-config fallback: scholarship-first keyword rank
+      sectionDefs = sectionDefs
+        .map((s) => {
+          const sample = byCourse.get(s.courseId)?.[0];
+          const kind = courseKindFromEnTitle(sample?.course?.title);
+          const legacyRank =
+            kind === 'scholarship'
+              ? 0
+              : kind === 'ol'
+                ? 1
+                : kind === 'al'
+                  ? 2
+                  : kind === 'driving'
+                    ? 3
+                    : 4;
+          return { ...s, sortOrder: legacyRank };
+        })
+        .sort((a, b) => a.sortOrder - b.sortOrder);
+    }
+
+    const sections = sectionDefs
+      .map((def) => {
+        const courseQuizzes = byCourse.get(def.courseId) ?? [];
+        if (!courseQuizzes.length) return null;
+        const course = courseQuizzes[0].course;
+        let quizzes = courseQuizzes;
+        if (def.quizIds.length > 0) {
+          const byId = new Map(courseQuizzes.map((q) => [q.id, q]));
+          quizzes = def.quizIds
+            .map((id) => byId.get(id))
+            .filter((q): q is (typeof courseQuizzes)[number] => Boolean(q));
+        }
+        quizzes = quizzes.slice(0, def.maxQuizzes);
+        return {
+          courseId: def.courseId,
+          course,
+          maxQuizzes: def.maxQuizzes,
+          quizzes,
+        };
+      })
+      .filter((s): s is NonNullable<typeof s> => Boolean(s));
+
+    return {
+      hero: config.hero,
+      maxCategories: config.maxCategories,
+      promoSection: config.promoSection,
+      sections,
+    };
+  }
+
+  private async buildSeededHomepageConfig(
+    base: HomepageConfig,
+  ): Promise<HomepageConfig> {
+    const courses = await this.listCoursesWithPublishedQuizzes();
+    const ranked = [...courses].sort((a, b) => {
+      const ra = seedRankForKind(courseKindFromEnTitle(a.title));
+      const rb = seedRankForKind(courseKindFromEnTitle(b.title));
+      if (ra !== rb) return ra - rb;
+      return a.sortOrder - b.sortOrder;
+    });
+
+    const categories: HomepageCategoryConfig[] = ranked.map((c, i) => {
+      const kind = courseKindFromEnTitle(c.title);
+      return {
+        courseId: c.id,
+        // Scholarship exam season over — hide on home by default
+        visible: kind !== 'scholarship',
+        sortOrder: i,
+        maxQuizzes: 6,
+        quizIds: [],
+      };
+    });
+
+    return {
+      ...base,
+      maxCategories: base.maxCategories || 3,
+      categories,
+    };
+  }
+
+  private async listCoursesWithPublishedQuizzes() {
+    const courses = await this.prisma.course.findMany({
+      where: { quizzes: { some: { status: QuizStatus.Published } } },
+      orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+      select: {
+        id: true,
+        title: true,
+        sortOrder: true,
+        quizzes: {
+          where: { status: QuizStatus.Published },
+          select: { id: true, title: true },
+          orderBy: { createdAt: 'desc' },
+        },
+      },
+    });
+    return courses.map((c) => ({
+      id: c.id,
+      title: c.title,
+      sortOrder: c.sortOrder,
+      publishedQuizCount: c.quizzes.length,
+      quizzes: c.quizzes,
+      kind: courseKindFromEnTitle(c.title),
+    }));
+  }
+
+  private async loadPublishedQuizCards(guestSessionId?: string, userId?: string) {
+    const quizzes = await this.prisma.quiz.findMany({
+      where: { status: QuizStatus.Published },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        language: true,
+        languages: true,
+        title: true,
+        description: true,
+        seoTitle: true,
+        seoDescription: true,
+        coverImageUrl: true,
+        durationMinutes: true,
+        passingScorePercentage: true,
+        maxAttempts: true,
+        shuffleQuestions: true,
+        requiresUnlock: true,
+        priceLkr: true,
+        course: {
+          select: {
+            id: true,
+            title: true,
+            seoTitle: true,
+            seoDescription: true,
+            sortOrder: true,
+          },
+        },
+        module: { select: { id: true, title: true } },
+        createdBy: {
+          select: {
+            id: true,
+            name: true,
+            teacherProfile: { select: { slug: true, displayName: true } },
+          },
+        },
+        _count: { select: { quizQuestions: true, attempts: true } },
+      },
+    });
+
+    const unlockedIds = new Set<string>();
+    const quizIds = quizzes.map((q) => q.id);
+    if (userId && quizIds.length) {
+      const unlocks = await this.prisma.quizUnlock.findMany({
+        where: { userId, quizId: { in: quizIds } },
+        select: { quizId: true },
+      });
+      unlocks.forEach((u) => unlockedIds.add(u.quizId));
+    }
+    if (guestSessionId && quizIds.length) {
+      const unlocks = await this.prisma.quizUnlock.findMany({
+        where: { guestSessionId, quizId: { in: quizIds } },
+        select: { quizId: true },
+      });
+      unlocks.forEach((u) => unlockedIds.add(u.quizId));
+    }
+
+    // Lightweight unlock: subscription not resolved here; client refresh still personalizes
+    return quizzes.map((quiz) => {
+      const priceLkr = quiz.priceLkr != null ? Number(quiz.priceLkr) : null;
+      return {
+        ...quiz,
+        priceLkr,
+        unlocked: quiz.requiresUnlock ? unlockedIds.has(quiz.id) : true,
+        _count: {
+          questions: quiz._count.quizQuestions,
+          attempts: quiz._count.attempts,
+        },
+      };
+    });
   }
 
   async updateNotificationSettings(

@@ -170,6 +170,12 @@ export class DashboardController {
         icon: 'ClipboardList',
         subject: Subject.QUIZZES,
       },
+      {
+        name: 'Classes',
+        path: '/classes',
+        icon: 'School',
+        subject: Subject.QUIZZES,
+      },
     ];
 
     return allMenuItems

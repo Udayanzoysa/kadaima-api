@@ -18,6 +18,7 @@ import {
 } from './dto/notification-settings.dto';
 import { UpdateAiSettingsDto } from './dto/ai-settings.dto';
 import { UpdateSeoSettingsDto } from './dto/seo-settings.dto';
+import { UpdateHomepageSettingsDto } from './dto/homepage-settings.dto';
 import { SettingsService } from './settings.service';
 
 @ApiTags('Platform Settings')
@@ -119,5 +120,20 @@ export class SettingsController {
   @ApiOperation({ summary: 'Update site branding / SEO / Google Analytics settings' })
   updateSeoSettings(@Body() dto: UpdateSeoSettingsDto, @Req() req: any) {
     return this.settingsService.updateSeoSettings(dto, req.user?.id);
+  }
+
+  @Get('homepage')
+  @ApiOperation({
+    summary: 'Get public homepage layout (hero, categories, promo) + available courses',
+  })
+  getHomepageSettings() {
+    return this.settingsService.getHomepageSettings();
+  }
+
+  @Put('homepage')
+  @Audit('SETTINGS', AuditAction.UPDATE)
+  @ApiOperation({ summary: 'Update public homepage layout settings' })
+  updateHomepageSettings(@Body() dto: UpdateHomepageSettingsDto, @Req() req: any) {
+    return this.settingsService.updateHomepageSettings(dto, req.user?.id);
   }
 }

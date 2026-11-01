@@ -1081,6 +1081,7 @@ export class QuizService {
     const attempt = await this.prisma.quizAttempt.create({
       data: {
         quizId,
+        moduleId: quiz.moduleId,
         guestLeadId: guestLead.id,
         studentId: null,
         teacherUserId: quiz.createdById,
@@ -1746,6 +1747,7 @@ export class QuizService {
     const attempt = await this.prisma.quizAttempt.create({
       data: {
         quizId,
+        moduleId: quiz.moduleId,
         studentId,
         teacherUserId: quiz.createdById,
         resultToken: randomUUID(),
